@@ -51,8 +51,8 @@ REMINDER_CHECK_INTERVAL_SECONDS = int(os.getenv("REMINDER_CHECK_INTERVAL_SECONDS
 REMINDER_DAYS = [7, 3, 1, 0]
 
 DEFAULT_TOOLS = {
-    "GROKTOOL": {"code": "GROKTOOL", "name": "Tool Auto Grok", "price": 50000, "description": "Tool tạo video tự động", "active": 1},
-    "FBREELTOOL": {"code": "FBREELTOOL", "name": "Tool Auto Reels Facebook", "price": 50000, "description": "Tool up reels tự động", "active": 1},
+    "GROKTOOL": {"code": "GROKTOOL", "name": "Tool tạo video AI", "price": 50000, "description": "GROKTOOL", "active": 1},
+    "FBREELTOOL": {"code": "FBREELTOOL", "name": "Tool đăng video", "price": 50000, "description": "FBREELTOOL", "active": 1},
 }
 
 if not BOT_TOKEN:
