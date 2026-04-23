@@ -8,6 +8,7 @@ import hashlib
 import secrets
 import urllib.parse
 from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Optional, Tuple
 
 import requests
 from flask import Flask, request, jsonify
@@ -31,33 +32,45 @@ LICENSES_FILE = os.getenv("GIST_LICENSES_FILE", "bot_licenses.json")
 COUPONS_FILE = os.getenv("GIST_COUPONS_FILE", "bot_coupons.json")
 ORDERS_FILE = os.getenv("GIST_ORDERS_FILE", "bot_orders.json")
 REMINDERS_FILE = os.getenv("GIST_REMINDERS_FILE", "bot_reminders.json")
+BUY_STATES_FILE = os.getenv("GIST_BUY_STATES_FILE", "bot_buy_states.json")
 
-PAYOS_CLIENT_ID = os.getenv("PAYOS_CLIENT_ID", "")
-PAYOS_API_KEY = os.getenv("PAYOS_API_KEY", "")
-PAYOS_CHECKSUM_KEY = os.getenv("PAYOS_CHECKSUM_KEY", "")
-PAYOS_BASE_URL = os.getenv("PAYOS_BASE_URL", "https://api-merchant.payos.vn")
-PAYOS_RETURN_URL = os.getenv("PAYOS_RETURN_URL", f"{PUBLIC_BASE_URL}/payment-return" if PUBLIC_BASE_URL else "")
-PAYOS_CANCEL_URL = os.getenv("PAYOS_CANCEL_URL", f"{PUBLIC_BASE_URL}/payment-cancel" if PUBLIC_BASE_URL else "")
-PAYOS_WEBHOOK_PATH = os.getenv("PAYOS_WEBHOOK_PATH", "/payos-webhook")
+PAYOS_CLIENT_ID = os.getenv("PAYOS_CLIENT_ID", "").strip()
+PAYOS_API_KEY = os.getenv("PAYOS_API_KEY", "").strip()
+PAYOS_CHECKSUM_KEY = os.getenv("PAYOS_CHECKSUM_KEY", "").strip()
+PAYOS_BASE_URL = os.getenv("PAYOS_BASE_URL", "https://api-merchant.payos.vn").strip()
+PAYOS_RETURN_URL = os.getenv("PAYOS_RETURN_URL", f"{PUBLIC_BASE_URL}/payment-return" if PUBLIC_BASE_URL else "").strip()
+PAYOS_CANCEL_URL = os.getenv("PAYOS_CANCEL_URL", f"{PUBLIC_BASE_URL}/payment-cancel" if PUBLIC_BASE_URL else "").strip()
+PAYOS_WEBHOOK_PATH = os.getenv("PAYOS_WEBHOOK_PATH", "/payos-webhook").strip()
 PAYOS_WEBHOOK_URL = f"{PUBLIC_BASE_URL}{PAYOS_WEBHOOK_PATH}" if PUBLIC_BASE_URL else ""
 
 BANK_NAME = os.getenv("BANK_NAME", "").strip()
 BANK_ACCOUNT_NO = os.getenv("BANK_ACCOUNT_NO", "").strip()
 BANK_ACCOUNT_NAME = os.getenv("BANK_ACCOUNT_NAME", "").strip()
-PAYMENT_NOTE_PREFIX = os.getenv("PAYMENT_NOTE_PREFIX", "TOOL")
+PAYMENT_NOTE_PREFIX = os.getenv("PAYMENT_NOTE_PREFIX", "TOOL").strip()
 
-REMINDER_CHECK_INTERVAL_SECONDS = int(os.getenv("REMINDER_CHECK_INTERVAL_SECONDS", "3600"))
 REMINDER_DAYS = [7, 3, 1, 0]
 
-TELEGRAM_WEBHOOK_PATH = os.getenv("TELEGRAM_WEBHOOK_PATH", f"/webhook/{BOT_TOKEN}")
+TELEGRAM_WEBHOOK_PATH = os.getenv("TELEGRAM_WEBHOOK_PATH", f"/webhook/{BOT_TOKEN}").strip()
 TELEGRAM_WEBHOOK_URL = f"{PUBLIC_BASE_URL}{TELEGRAM_WEBHOOK_PATH}" if PUBLIC_BASE_URL else ""
-REMINDER_WEBHOOK_PATH = os.getenv("REMINDER_WEBHOOK_PATH", "/cron/remind_expiring")
+TELEGRAM_SECRET_TOKEN = os.getenv("TELEGRAM_SECRET_TOKEN", "").strip()
+REMINDER_WEBHOOK_PATH = os.getenv("REMINDER_WEBHOOK_PATH", "/cron/remind_expiring").strip()
 REMINDER_WEBHOOK_SECRET = os.getenv("REMINDER_WEBHOOK_SECRET", "").strip()
-REMINDER_MIN_INTERVAL_SECONDS = int(os.getenv("REMINDER_MIN_INTERVAL_SECONDS", "600"))
 
 DEFAULT_TOOLS = {
-    "GROKTOOL": {"code": "GROKTOOL", "name": "Tool tạo video AI", "price": 50000, "description": "GROKTOOL", "active": 1},
-    "FBREELTOOL": {"code": "FBREELTOOL", "name": "Tool đăng video", "price": 50000, "description": "FBREELTOOL", "active": 1},
+    "GROKTOOL": {
+        "code": "GROKTOOL",
+        "name": "Tool tạo video AI",
+        "price": 50000,
+        "description": "GROKTOOL",
+        "active": 1,
+    },
+    "FBREELTOOL": {
+        "code": "FBREELTOOL",
+        "name": "Tool đăng video",
+        "price": 50000,
+        "description": "FBREELTOOL",
+        "active": 1,
+    },
 }
 
 if not BOT_TOKEN:
@@ -71,14 +84,21 @@ if not GITHUB_TOKEN:
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 app = Flask(__name__)
-BUY_STATE = {}
-LAST_REMINDER_RUN_TS = 0
+
+GIST_API_URL = f"https://api.github.com/gists/{GIST_ID}"
+GIST_HEADERS = {
+    "Accept": "application/vnd.github+json",
+    "Authorization": f"Bearer {GITHUB_TOKEN}",
+}
+
 
 def now_vn():
     return datetime.now(TZ)
 
+
 def iso_now():
     return now_vn().isoformat()
+
 
 def fmt_dt(dt_str):
     if not dt_str:
@@ -89,37 +109,56 @@ def fmt_dt(dt_str):
     except Exception:
         return str(dt_str)
 
+
 def fmt_money(v):
     try:
         return f"{int(v):,}đ"
     except Exception:
         return f"{v}đ"
 
+
 def safe_upper(s):
     return (s or "").strip().upper()
+
 
 def norm_machine_id(s):
     s = (s or "").strip().upper()
     s = re.sub(r"\s+", "", s)
-    for bad in ["MACHINEID=", "MACHINE_ID=", "MACHINE-ID=", "MACHINE ID=", "MACHINE ID :", "MACHINE ID", "MACHINEID:"]:
+    for bad in [
+        "MACHINEID=",
+        "MACHINE_ID=",
+        "MACHINE-ID=",
+        "MACHINE ID=",
+        "MACHINE ID :",
+        "MACHINE ID",
+        "MACHINEID:",
+    ]:
         s = s.replace(bad, "")
     return s.replace("=", "").replace(":", "")
+
 
 def is_valid_machine_id(s):
     return bool(re.fullmatch(r"[A-F0-9]{16,64}", norm_machine_id(s)))
 
+
 def user_label(user):
-    full_name = " ".join(x for x in [getattr(user, "first_name", ""), getattr(user, "last_name", "")] if x).strip()
+    full_name = " ".join(
+        x for x in [getattr(user, "first_name", ""), getattr(user, "last_name", "")]
+        if x
+    ).strip()
     return full_name or getattr(user, "username", "") or str(getattr(user, "id", ""))
+
 
 def is_admin(user_id):
     return int(user_id) in ADMIN_IDS
+
 
 def admin_only(message):
     if not is_admin(message.from_user.id):
         bot.reply_to(message, "Bạn không có quyền dùng lệnh admin.")
         return False
     return True
+
 
 def notify_admins(text):
     for aid in ADMIN_IDS:
@@ -128,20 +167,17 @@ def notify_admins(text):
         except Exception:
             pass
 
-GIST_API_URL = f"https://api.github.com/gists/{GIST_ID}"
-GIST_HEADERS = {
-    "Accept": "application/vnd.github+json",
-    "Authorization": f"Bearer {GITHUB_TOKEN}",
-}
 
 def gist_raw_url(filename):
     return f"https://gist.githubusercontent.com/{GIST_OWNER}/{GIST_ID}/raw/{filename}"
+
 
 def _safe_json_load(text, fallback):
     try:
         return json.loads(text)
     except Exception:
         return fallback
+
 
 def load_gist_json(filename, fallback):
     try:
@@ -165,11 +201,13 @@ def load_gist_json(filename, fallback):
         except Exception:
             return fallback
 
+
 def save_gist_json(filename, data):
     payload = {"files": {filename: {"content": json.dumps(data, ensure_ascii=False, indent=2)}}}
     r = requests.patch(GIST_API_URL, headers=GIST_HEADERS, json=payload, timeout=25)
     r.raise_for_status()
     return True
+
 
 def bootstrap_gist():
     defaults = {
@@ -179,47 +217,69 @@ def bootstrap_gist():
         COUPONS_FILE: {},
         ORDERS_FILE: {},
         REMINDERS_FILE: {},
+        BUY_STATES_FILE: {},
     }
     for fn, default in defaults.items():
         existing = load_gist_json(fn, None)
         if existing is None:
             save_gist_json(fn, default)
 
+
 def get_users():
     return load_gist_json(USERS_FILE, {})
+
 
 def save_users(data):
     save_gist_json(USERS_FILE, data)
 
+
 def get_tools():
     return load_gist_json(TOOLS_FILE, DEFAULT_TOOLS.copy())
+
 
 def save_tools(data):
     save_gist_json(TOOLS_FILE, data)
 
+
 def get_licenses():
     return load_gist_json(LICENSES_FILE, {})
+
 
 def save_licenses(data):
     save_gist_json(LICENSES_FILE, data)
 
+
 def get_coupons():
     return load_gist_json(COUPONS_FILE, {})
+
 
 def save_coupons(data):
     save_gist_json(COUPONS_FILE, data)
 
+
 def get_orders():
     return load_gist_json(ORDERS_FILE, {})
+
 
 def save_orders(data):
     save_gist_json(ORDERS_FILE, data)
 
+
 def get_reminders():
     return load_gist_json(REMINDERS_FILE, {})
 
+
 def save_reminders(data):
     save_gist_json(REMINDERS_FILE, data)
+
+
+def get_buy_states():
+    return load_gist_json(BUY_STATES_FILE, {})
+
+
+def save_buy_states(data):
+    save_gist_json(BUY_STATES_FILE, data)
+
 
 def ensure_user(user):
     users = get_users()
@@ -239,11 +299,32 @@ def ensure_user(user):
     save_users(users)
     return item
 
+
+def get_buy_state(user_id: int) -> Dict[str, Any]:
+    return get_buy_states().get(str(int(user_id)), {})
+
+
+def set_buy_state(user_id: int, state: Dict[str, Any]):
+    data = get_buy_states()
+    state = dict(state)
+    state["updated_at"] = iso_now()
+    data[str(int(user_id))] = state
+    save_buy_states(data)
+
+
+def clear_buy_state(user_id: int):
+    data = get_buy_states()
+    data.pop(str(int(user_id)), None)
+    save_buy_states(data)
+
+
 def list_tools():
     return [v for v in get_tools().values() if int(v.get("active", 1)) == 1]
 
+
 def get_tool(code):
     return (get_tools() or {}).get(safe_upper(code))
+
 
 def set_tool_price(code, price):
     data = get_tools()
@@ -253,6 +334,7 @@ def set_tool_price(code, price):
     data[code]["price"] = int(price)
     save_tools(data)
     return True
+
 
 def add_tool(code, name, price, description=""):
     data = get_tools()
@@ -269,8 +351,13 @@ def add_tool(code, name, price, description=""):
     }
     save_tools(data)
 
-def get_license_key(user_id, tool_code):
+
+def get_license_key(user_id, tool_code, machine_id=None):
+    machine_id = norm_machine_id(machine_id) if machine_id else ""
+    if machine_id:
+        return f"{int(user_id)}__{safe_upper(tool_code)}__{machine_id}"
     return f"{int(user_id)}__{safe_upper(tool_code)}"
+
 
 def get_user_licenses(user_id):
     data = get_licenses()
@@ -281,16 +368,34 @@ def get_user_licenses(user_id):
     out.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
     return out
 
+
+def _find_existing_license_entry(licenses, user_id, tool_code, machine_id=None):
+    tool_code = safe_upper(tool_code)
+    machine_id = norm_machine_id(machine_id) if machine_id else ""
+    if machine_id:
+        new_key = get_license_key(user_id, tool_code, machine_id)
+        if new_key in licenses:
+            return new_key, licenses[new_key]
+    legacy_key = get_license_key(user_id, tool_code)
+    if legacy_key in licenses:
+        item = licenses[legacy_key]
+        existing_machine = norm_machine_id(item.get("machine_id", ""))
+        if not machine_id or not existing_machine or existing_machine == machine_id:
+            return legacy_key, item
+    return None, None
+
+
 def extend_license(user_id, tool_code, days, machine_id=None):
     licenses = get_licenses()
-    key = get_license_key(user_id, tool_code)
-    now = now_vn()
-    item = licenses.get(key) or {
+    machine_id = norm_machine_id(machine_id) if machine_id else ""
+    found_key, existing = _find_existing_license_entry(licenses, user_id, tool_code, machine_id)
+    item = existing or {
         "user_id": int(user_id),
         "tool_code": safe_upper(tool_code),
-        "machine_id": norm_machine_id(machine_id) if machine_id else "",
+        "machine_id": machine_id,
         "created_at": iso_now(),
     }
+    now = now_vn()
     old = item.get("expires_at")
     if old:
         try:
@@ -302,13 +407,17 @@ def extend_license(user_id, tool_code, days, machine_id=None):
         base = now
     new_exp = base + timedelta(days=int(days))
     if machine_id:
-        item["machine_id"] = norm_machine_id(machine_id)
+        item["machine_id"] = machine_id
+    key = get_license_key(user_id, tool_code, item.get("machine_id"))
     item["expires_at"] = new_exp.isoformat()
     item["status"] = "active"
     item["updated_at"] = iso_now()
+    if found_key and found_key != key:
+        licenses.pop(found_key, None)
     licenses[key] = item
     save_licenses(licenses)
     return new_exp
+
 
 def add_coupon(code, discount_type, discount_value, max_uses, expires_at):
     coupons = get_coupons()
@@ -327,8 +436,10 @@ def add_coupon(code, discount_type, discount_value, max_uses, expires_at):
     }
     save_coupons(coupons)
 
+
 def get_coupon(code):
     return get_coupons().get(safe_upper(code))
+
 
 def validate_coupon(user_id, code, base_price):
     coupon = get_coupon(code)
@@ -350,6 +461,7 @@ def validate_coupon(user_id, code, base_price):
         discount = max(0, min(base_price, int(coupon["discount_value"])))
     return True, "OK", discount
 
+
 def mark_coupon_used(user_id, code):
     coupons = get_coupons()
     code = safe_upper(code)
@@ -359,25 +471,47 @@ def mark_coupon_used(user_id, code):
     coupons[code][f"used_by_{int(user_id)}"] = iso_now()
     save_coupons(coupons)
 
+
 def payos_headers():
-    return {"x-client-id": PAYOS_CLIENT_ID, "x-api-key": PAYOS_API_KEY, "Content-Type": "application/json"}
+    return {
+        "x-client-id": PAYOS_CLIENT_ID,
+        "x-api-key": PAYOS_API_KEY,
+        "Content-Type": "application/json",
+    }
+
 
 def sign_payos_payment_request(amount, order_code, description, cancel_url, return_url):
-    raw = f"amount={amount}&cancelUrl={cancel_url}&description={description}&orderCode={order_code}&returnUrl={return_url}"
+    raw = (
+        f"amount={amount}&cancelUrl={cancel_url}&description={description}"
+        f"&orderCode={order_code}&returnUrl={return_url}"
+    )
     return hmac.new(PAYOS_CHECKSUM_KEY.encode(), raw.encode(), hashlib.sha256).hexdigest()
+
 
 def build_payos_order_code():
     return int(time.time() * 1000) % 900000000000 + 100000000000
 
+
 def generate_qr(amount, payment_code):
     if BANK_ACCOUNT_NO:
-        return f"https://img.vietqr.io/image/970436-{BANK_ACCOUNT_NO}-compact2.png?amount={int(amount)}&addInfo={urllib.parse.quote(payment_code)}"
+        return (
+            f"https://img.vietqr.io/image/970436-{BANK_ACCOUNT_NO}-compact2.png"
+            f"?amount={int(amount)}&addInfo={urllib.parse.quote(payment_code)}"
+        )
     return ""
+
 
 def create_payos_payment_link(amount, payment_code, product_name):
     payos_order_code = build_payos_order_code()
     description = payment_code[:25]
-    result = {"payos_order_code": payos_order_code, "checkout_url": "", "qr_url": generate_qr(amount, payment_code), "qr_code": "", "provider": "fallback", "description": description}
+    result = {
+        "payos_order_code": payos_order_code,
+        "checkout_url": "",
+        "qr_url": generate_qr(amount, payment_code),
+        "qr_code": "",
+        "provider": "fallback",
+        "description": description,
+    }
     if not (PAYOS_CLIENT_ID and PAYOS_API_KEY and PAYOS_CHECKSUM_KEY and PAYOS_RETURN_URL and PAYOS_CANCEL_URL):
         return result
     payload = {
@@ -388,24 +522,48 @@ def create_payos_payment_link(amount, payment_code, product_name):
         "cancelUrl": PAYOS_CANCEL_URL,
         "returnUrl": PAYOS_RETURN_URL,
     }
-    payload["signature"] = sign_payos_payment_request(int(amount), payos_order_code, description, PAYOS_CANCEL_URL, PAYOS_RETURN_URL)
+    payload["signature"] = sign_payos_payment_request(
+        int(amount), payos_order_code, description, PAYOS_CANCEL_URL, PAYOS_RETURN_URL
+    )
     try:
-        r = requests.post(f"{PAYOS_BASE_URL}/v2/payment-requests", headers=payos_headers(), json=payload, timeout=20)
+        r = requests.post(
+            f"{PAYOS_BASE_URL}/v2/payment-requests",
+            headers=payos_headers(),
+            json=payload,
+            timeout=20,
+        )
         data = r.json()
         if r.ok and str(data.get("code")) == "00" and data.get("data"):
             info = data["data"]
             qr_raw = info.get("qrCode") or ""
-            qr_img = f"https://api.qrserver.com/v1/create-qr-code/?size=512x512&data={urllib.parse.quote(qr_raw)}" if qr_raw else result["qr_url"]
-            result.update({"checkout_url": info.get("checkoutUrl", ""), "qr_url": qr_img, "qr_code": qr_raw, "provider": "payos", "payment_link_id": info.get("paymentLinkId", "")})
+            qr_img = (
+                f"https://api.qrserver.com/v1/create-qr-code/?size=512x512&data={urllib.parse.quote(qr_raw)}"
+                if qr_raw
+                else result["qr_url"]
+            )
+            result.update(
+                {
+                    "checkout_url": info.get("checkoutUrl", ""),
+                    "qr_url": qr_img,
+                    "qr_code": qr_raw,
+                    "provider": "payos",
+                    "payment_link_id": info.get("paymentLinkId", ""),
+                }
+            )
     except Exception as e:
         print("create_payos_payment_link error:", e)
     return result
+
 
 def get_payos_payment_status(order_code):
     if not (PAYOS_CLIENT_ID and PAYOS_API_KEY):
         return {"ok": False, "error": "payos_not_configured"}
     try:
-        r = requests.get(f"{PAYOS_BASE_URL}/v2/payment-requests/{order_code}", headers=payos_headers(), timeout=20)
+        r = requests.get(
+            f"{PAYOS_BASE_URL}/v2/payment-requests/{order_code}",
+            headers=payos_headers(),
+            timeout=20,
+        )
         data = r.json()
         if not r.ok:
             return {"ok": False, "error": data}
@@ -413,12 +571,14 @@ def get_payos_payment_status(order_code):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+
 def deep_sort_data(obj):
     if isinstance(obj, dict):
         return {k: deep_sort_data(obj[k]) for k in sorted(obj.keys())}
     if isinstance(obj, list):
         return [deep_sort_data(x) for x in obj]
     return obj
+
 
 def flatten_signature_data(data, prefix=""):
     pairs = []
@@ -434,6 +594,7 @@ def flatten_signature_data(data, prefix=""):
         pairs.append((prefix, value))
     return pairs
 
+
 def verify_payos_webhook_signature(payload):
     signature = payload.get("signature")
     data = payload.get("data")
@@ -445,17 +606,28 @@ def verify_payos_webhook_signature(payload):
     expected = hmac.new(PAYOS_CHECKSUM_KEY.encode(), raw.encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature)
 
+
 def confirm_payos_webhook_url():
     if not (PAYOS_CLIENT_ID and PAYOS_API_KEY and PAYOS_WEBHOOK_URL):
         return
     try:
-        r = requests.post(f"{PAYOS_BASE_URL}/confirm-webhook", headers=payos_headers(), json={"webhookUrl": PAYOS_WEBHOOK_URL}, timeout=20)
+        r = requests.post(
+            f"{PAYOS_BASE_URL}/confirm-webhook",
+            headers=payos_headers(),
+            json={"webhookUrl": PAYOS_WEBHOOK_URL},
+            timeout=20,
+        )
         print("confirm webhook:", r.status_code, r.text)
     except Exception as e:
         print("confirm webhook error:", e)
 
+
 def create_order(user_id, username, full_name, tool_code, machine_id, months, base_price, coupon_code, discount_amount, final_price):
-    payos = create_payos_payment_link(final_price, "ODTMP" + secrets.token_hex(3).upper(), (get_tool(tool_code) or {}).get("name", tool_code))
+    payos = create_payos_payment_link(
+        final_price,
+        "ODTMP" + secrets.token_hex(3).upper(),
+        (get_tool(tool_code) or {}).get("name", tool_code),
+    )
     order_code = "OD" + secrets.token_hex(4).upper()
     orders = get_orders()
     orders[order_code] = {
@@ -486,8 +658,10 @@ def create_order(user_id, username, full_name, tool_code, machine_id, months, ba
     save_orders(orders)
     return orders[order_code]
 
+
 def get_order(order_code):
     return get_orders().get(safe_upper(order_code))
+
 
 def get_order_by_payos_code(payos_code):
     for _, order in get_orders().items():
@@ -495,10 +669,12 @@ def get_order_by_payos_code(payos_code):
             return order
     return None
 
+
 def save_order(order):
     orders = get_orders()
     orders[safe_upper(order["order_code"])] = order
     save_orders(orders)
+
 
 def approve_paid_order(order_code, payment_ref=None, source="payos"):
     order = get_order(order_code)
@@ -520,19 +696,45 @@ def approve_paid_order(order_code, payment_ref=None, source="payos"):
     order["updated_at"] = iso_now()
     save_order(order)
     try:
-        bot.send_message(order["user_id"], f"✅ <b>Thanh toán thành công</b>\nMã đơn: <code>{order['order_code']}</code>\nTool: <b>{order['tool_code']}</b>\nMachine ID: <code>{order['machine_id']}</code>\nThời hạn: <b>{order['months']}</b> tháng\nHết hạn mới: <b>{fmt_dt(new_exp.isoformat())}</b>\nRef: <code>{payment_ref or '-'}</code>", reply_markup=main_menu_markup(order["user_id"]))
+        bot.send_message(
+            order["user_id"],
+            f"✅ <b>Thanh toán thành công</b>\n"
+            f"Mã đơn: <code>{order['order_code']}</code>\n"
+            f"Tool: <b>{order['tool_code']}</b>\n"
+            f"Machine ID: <code>{order['machine_id']}</code>\n"
+            f"Thời hạn: <b>{order['months']}</b> tháng\n"
+            f"Hết hạn mới: <b>{fmt_dt(new_exp.isoformat())}</b>\n"
+            f"Ref: <code>{payment_ref or '-'}</code>",
+            reply_markup=main_menu_markup(order["user_id"]),
+        )
     except Exception:
         pass
-    notify_admins(f"💰 <b>Đơn đã tự duyệt</b>\nNguồn: <b>{source}</b>\nOrder: <code>{order['order_code']}</code>\nUser: <code>{order['user_id']}</code>\nTool: <b>{order['tool_code']}</b>\nMachine ID: <code>{order['machine_id']}</code>\nSố tháng: <b>{order['months']}</b>\nSố tiền: <b>{fmt_money(order['final_price'])}</b>\nRef: <code>{payment_ref or '-'}</code>\nHết hạn mới: <b>{fmt_dt(new_exp.isoformat())}</b>")
+    notify_admins(
+        f"💰 <b>Đơn đã tự duyệt</b>\n"
+        f"Nguồn: <b>{source}</b>\n"
+        f"Order: <code>{order['order_code']}</code>\n"
+        f"User: <code>{order['user_id']}</code>\n"
+        f"Tool: <b>{order['tool_code']}</b>\n"
+        f"Machine ID: <code>{order['machine_id']}</code>\n"
+        f"Số tháng: <b>{order['months']}</b>\n"
+        f"Số tiền: <b>{fmt_money(order['final_price'])}</b>\n"
+        f"Ref: <code>{payment_ref or '-'}</code>\n"
+        f"Hết hạn mới: <b>{fmt_dt(new_exp.isoformat())}</b>"
+    )
     return True, "OK"
 
-def reminder_sent(user_id, tool_code, reminder_key):
-    return bool(get_reminders().get(f"{int(user_id)}__{safe_upper(tool_code)}__{reminder_key}"))
 
-def mark_reminder_sent(user_id, tool_code, reminder_key):
+def reminder_sent(user_id, tool_code, machine_id, reminder_key):
+    rid = f"{int(user_id)}__{safe_upper(tool_code)}__{norm_machine_id(machine_id)}__{reminder_key}"
+    return bool(get_reminders().get(rid))
+
+
+def mark_reminder_sent(user_id, tool_code, machine_id, reminder_key):
     data = get_reminders()
-    data[f"{int(user_id)}__{safe_upper(tool_code)}__{reminder_key}"] = iso_now()
+    rid = f"{int(user_id)}__{safe_upper(tool_code)}__{norm_machine_id(machine_id)}__{reminder_key}"
+    data[rid] = iso_now()
     save_reminders(data)
+
 
 def process_expiry_reminders():
     rows = get_licenses().values()
@@ -544,47 +746,56 @@ def process_expiry_reminders():
         except Exception:
             continue
         delta_days = (exp.date() - now.date()).days
-        if delta_days not in [7, 3, 1, 0]:
+        if delta_days not in REMINDER_DAYS:
             continue
         reminder_key = f"{delta_days}_{now.date().isoformat()}"
-        if reminder_sent(r["user_id"], r["tool_code"], reminder_key):
+        machine_id = r.get("machine_id") or ""
+        if reminder_sent(r["user_id"], r["tool_code"], machine_id, reminder_key):
             continue
         tool = get_tool(r["tool_code"]) or {}
         tool_name = tool.get("name") or r["tool_code"]
         if delta_days > 0:
-            user_text = f"⏰ <b>Nhắc hạn tool</b>\nTool: <b>{tool_name}</b>\nMachine ID: <code>{r.get('machine_id') or '-'}</code>\nCòn <b>{delta_days}</b> ngày sẽ hết hạn.\nHết hạn lúc: <b>{fmt_dt(r['expires_at'])}</b>"
+            user_text = (
+                f"⏰ <b>Nhắc hạn tool</b>\n"
+                f"Tool: <b>{tool_name}</b>\n"
+                f"Machine ID: <code>{machine_id or '-'}</code>\n"
+                f"Còn <b>{delta_days}</b> ngày sẽ hết hạn.\n"
+                f"Hết hạn lúc: <b>{fmt_dt(r['expires_at'])}</b>"
+            )
         else:
-            user_text = f"⚠️ <b>Tool đã hết hạn</b>\nTool: <b>{tool_name}</b>\nMachine ID: <code>{r.get('machine_id') or '-'}</code>\nHết hạn lúc: <b>{fmt_dt(r['expires_at'])}</b>"
+            user_text = (
+                f"⚠️ <b>Tool đã hết hạn</b>\n"
+                f"Tool: <b>{tool_name}</b>\n"
+                f"Machine ID: <code>{machine_id or '-'}</code>\n"
+                f"Hết hạn lúc: <b>{fmt_dt(r['expires_at'])}</b>"
+            )
         try:
             bot.send_message(int(r["user_id"]), user_text, reply_markup=main_menu_markup(int(r["user_id"])))
         except Exception:
             pass
-        admin_lines.append(f"• User <code>{r['user_id']}</code> | {r['tool_code']} | còn {delta_days} ngày | hết hạn {fmt_dt(r['expires_at'])}")
-        mark_reminder_sent(r["user_id"], r["tool_code"], reminder_key)
+        admin_lines.append(
+            f"• User <code>{r['user_id']}</code> | {r['tool_code']} | "
+            f"Machine <code>{machine_id or '-'}</code> | còn {delta_days} ngày | hết hạn {fmt_dt(r['expires_at'])}"
+        )
+        mark_reminder_sent(r["user_id"], r["tool_code"], machine_id, reminder_key)
     if admin_lines:
         notify_admins("📋 <b>Danh sách user sắp hết hạn</b>\n" + "\n".join(admin_lines))
-
-def maybe_run_reminders(force=False):
-    global LAST_REMINDER_RUN_TS
-    now_ts = time.time()
-    if not force and (now_ts - LAST_REMINDER_RUN_TS) < REMINDER_MIN_INTERVAL_SECONDS:
-        return False
-    LAST_REMINDER_RUN_TS = now_ts
-    try:
-        process_expiry_reminders()
-        return True
-    except Exception as e:
-        print(f"maybe_run_reminders error: {e}")
-        return False
 
 
 def main_menu_markup(user_id):
     mk = types.InlineKeyboardMarkup(row_width=2)
-    mk.add(types.InlineKeyboardButton("🛍 Mua tool", callback_data="menu_buy"), types.InlineKeyboardButton("📅 Hạn dùng của tôi", callback_data="menu_my"))
-    mk.add(types.InlineKeyboardButton("🎁 Mã giảm giá", callback_data="menu_coupon_help"), types.InlineKeyboardButton("☎️ Liên hệ admin", callback_data="menu_contact"))
+    mk.add(
+        types.InlineKeyboardButton("🛍 Mua tool", callback_data="menu_buy"),
+        types.InlineKeyboardButton("📅 Hạn dùng của tôi", callback_data="menu_my"),
+    )
+    mk.add(
+        types.InlineKeyboardButton("🎁 Mã giảm giá", callback_data="menu_coupon_help"),
+        types.InlineKeyboardButton("☎️ Liên hệ admin", callback_data="menu_contact"),
+    )
     if is_admin(user_id):
         mk.add(types.InlineKeyboardButton("🛠 Admin", callback_data="menu_admin"))
     return mk
+
 
 def buy_menu_markup():
     mk = types.InlineKeyboardMarkup(row_width=1)
@@ -593,6 +804,7 @@ def buy_menu_markup():
     mk.add(types.InlineKeyboardButton("⬅️ Về menu", callback_data="back_main"))
     return mk
 
+
 def months_markup(tool_code):
     mk = types.InlineKeyboardMarkup(row_width=3)
     for m in [1, 3, 6, 12]:
@@ -600,10 +812,15 @@ def months_markup(tool_code):
     mk.add(types.InlineKeyboardButton("⬅️ Chọn tool khác", callback_data="menu_buy"))
     return mk
 
+
 def coupon_decision_markup():
     mk = types.InlineKeyboardMarkup(row_width=2)
-    mk.add(types.InlineKeyboardButton("🎁 Nhập mã giảm giá", callback_data="enter_coupon"), types.InlineKeyboardButton("➡️ Bỏ qua", callback_data="skip_coupon"))
+    mk.add(
+        types.InlineKeyboardButton("🎁 Nhập mã giảm giá", callback_data="enter_coupon"),
+        types.InlineKeyboardButton("➡️ Bỏ qua", callback_data="skip_coupon"),
+    )
     return mk
+
 
 def payment_markup(order_code, checkout_url=""):
     mk = types.InlineKeyboardMarkup(row_width=1)
@@ -613,31 +830,133 @@ def payment_markup(order_code, checkout_url=""):
     mk.add(types.InlineKeyboardButton("⬅️ Về menu", callback_data="back_main"))
     return mk
 
+
 def admin_menu_markup():
     mk = types.InlineKeyboardMarkup(row_width=2)
-    mk.add(types.InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"), types.InlineKeyboardButton("⏰ Chạy nhắc hạn", callback_data="admin_run_remind"))
+    mk.add(
+        types.InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"),
+        types.InlineKeyboardButton("⏰ Chạy nhắc hạn", callback_data="admin_run_remind"),
+    )
     mk.add(types.InlineKeyboardButton("⬅️ Về menu", callback_data="back_main"))
     return mk
 
+
 def build_payment_text(order):
     transfer_note = f"{PAYMENT_NOTE_PREFIX} {order['order_code']}"
-    lines = ["<b>Đơn hàng của bạn</b>", f"Mã đơn: <code>{order['order_code']}</code>", f"Tool: <b>{order['tool_code']}</b>", f"Số tháng: <b>{order['months']}</b>", f"Machine ID: <code>{order['machine_id']}</code>", f"Giá gốc: <b>{fmt_money(order['base_price'])}</b>", f"Giảm giá: <b>{fmt_money(order['discount_amount'])}</b>", f"Cần thanh toán: <b>{fmt_money(order['final_price'])}</b>"]
+    lines = [
+        "<b>Đơn hàng của bạn</b>",
+        f"Mã đơn: <code>{order['order_code']}</code>",
+        f"Tool: <b>{order['tool_code']}</b>",
+        f"Số tháng: <b>{order['months']}</b>",
+        f"Machine ID: <code>{order['machine_id']}</code>",
+        f"Giá gốc: <b>{fmt_money(order['base_price'])}</b>",
+        f"Giảm giá: <b>{fmt_money(order['discount_amount'])}</b>",
+        f"Cần thanh toán: <b>{fmt_money(order['final_price'])}</b>",
+    ]
     if order["payment_provider"] == "payos":
         lines += ["", "Bấm nút bên dưới để thanh toán qua payOS. Sau khi thanh toán xong, hệ thống sẽ tự duyệt đơn."]
     else:
         lines += ["", "payOS chưa cấu hình đầy đủ, hiện bot dùng thông tin chuyển khoản thủ công."]
         if BANK_NAME and BANK_ACCOUNT_NO and BANK_ACCOUNT_NAME:
-            lines += [f"Ngân hàng: <b>{BANK_NAME}</b>", f"Số tài khoản: <code>{BANK_ACCOUNT_NO}</code>", f"Chủ tài khoản: <b>{BANK_ACCOUNT_NAME}</b>", f"Nội dung CK: <code>{transfer_note}</code>"]
+            lines += [
+                f"Ngân hàng: <b>{BANK_NAME}</b>",
+                f"Số tài khoản: <code>{BANK_ACCOUNT_NO}</code>",
+                f"Chủ tài khoản: <b>{BANK_ACCOUNT_NAME}</b>",
+                f"Nội dung CK: <code>{transfer_note}</code>",
+            ]
     return "\n".join(lines)
+
+
+def prompt_for_machine_id(chat_id, tool, months):
+    bot.send_message(
+        chat_id,
+        f"Bạn đã chọn <b>{tool['name']}</b> — <b>{months}</b> tháng.\n\n"
+        f"Vui lòng nhập <b>Machine ID</b>.\nVí dụ:\n"
+        f"<code>Machine ID=B8A8334E67D60DCE1D38FFE40CDA3F1F</code>",
+    )
+
+
+def handle_stateful_text(message):
+    user_id = message.from_user.id
+    state = get_buy_state(user_id)
+    if not state:
+        return False
+
+    step = state.get("step")
+    if step == "await_machine_id":
+        machine_id = norm_machine_id(message.text)
+        if not is_valid_machine_id(machine_id):
+            bot.send_message(
+                message.chat.id,
+                "Machine ID chưa hợp lệ.\nVí dụ:\n<code>B8A8334E67D60DCE1D38FFE40CDA3F1F</code>\n\nNhập lại:",
+            )
+            return True
+        state["machine_id"] = machine_id
+        state["coupon_code"] = None
+        state["step"] = "await_coupon_decision"
+        set_buy_state(user_id, state)
+        bot.send_message(
+            message.chat.id,
+            f"✅ Đã nhận Machine ID:\n<code>{machine_id}</code>\n\nBạn có muốn nhập mã giảm giá không?",
+            reply_markup=coupon_decision_markup(),
+        )
+        return True
+
+    if step == "await_coupon":
+        code = safe_upper(message.text)
+        if code == "SKIP":
+            create_order_and_show_payment(message.chat.id, user_id, message.from_user)
+            return True
+        tool = get_tool(state.get("tool_code"))
+        if not tool:
+            clear_buy_state(user_id)
+            bot.send_message(message.chat.id, "Tool không còn tồn tại.", reply_markup=main_menu_markup(user_id))
+            return True
+        base_price = int(tool["price"]) * int(state["months"])
+        ok, msg, discount = validate_coupon(user_id, code, base_price)
+        if not ok:
+            bot.send_message(
+                message.chat.id,
+                f"❌ {msg}\nNhập lại mã khác hoặc gửi <code>SKIP</code> để bỏ qua:",
+            )
+            return True
+        state["coupon_code"] = code
+        state["step"] = "coupon_applied"
+        set_buy_state(user_id, state)
+        bot.send_message(message.chat.id, f"✅ Áp dụng mã <b>{code}</b> thành công.\nGiảm: <b>{fmt_money(discount)}</b>")
+        create_order_and_show_payment(message.chat.id, user_id, message.from_user)
+        return True
+
+    return False
+
 
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
     ensure_user(message.from_user)
-    bot.send_message(message.chat.id, f"Xin chào <b>{user_label(message.from_user)}</b>\n\nBot này lưu users, tools, licenses, coupons, orders, reminders bằng <b>GitHub Gist JSON</b>.", reply_markup=main_menu_markup(message.from_user.id))
+    bot.send_message(
+        message.chat.id,
+        f"Xin chào <b>{user_label(message.from_user)}</b>\n\n"
+        f"Bot này lưu users, tools, licenses, coupons, orders, reminders bằng <b>GitHub Gist JSON</b>.",
+        reply_markup=main_menu_markup(message.from_user.id),
+    )
+
 
 @bot.message_handler(commands=["help"])
 def cmd_help(message):
-    bot.send_message(message.chat.id, "<b>Lệnh user</b>\n/start\n/tools\n/mylicense\n\n<b>Lệnh admin</b>\n/addtool CODE | Tên tool | Giá | Mô tả\n/setprice CODE | Giá_mới\n/adduser user_id | TOOL_CODE | số_ngày | MACHINE_ID(optional)\n/extend user_id | TOOL_CODE | số_ngày | MACHINE_ID(optional)\n/coupon CODE | percent|fixed | value | max_uses | YYYY-MM-DD hoặc -\n/approve ORDER_CODE\n/broadcast nội dung\n/run_reminders\n")
+    bot.send_message(
+        message.chat.id,
+        "<b>Lệnh user</b>\n/start\n/tools\n/mylicense\n\n"
+        "<b>Lệnh admin</b>\n"
+        "/addtool CODE | Tên tool | Giá | Mô tả\n"
+        "/setprice CODE | Giá_mới\n"
+        "/adduser user_id | TOOL_CODE | số_ngày | MACHINE_ID(optional)\n"
+        "/extend user_id | TOOL_CODE | số_ngày | MACHINE_ID(optional)\n"
+        "/coupon CODE | percent|fixed | value | max_uses | YYYY-MM-DD hoặc -\n"
+        "/approve ORDER_CODE\n"
+        "/broadcast nội dung\n"
+        "/run_reminders\n",
+    )
+
 
 @bot.message_handler(commands=["tools"])
 def cmd_tools(message):
@@ -650,6 +969,7 @@ def cmd_tools(message):
         desc = f"\n  {t['description']}" if t.get("description") else ""
         lines.append(f"• <b>{t['code']}</b> — {t['name']} — {fmt_money(t['price'])}/tháng{desc}")
     bot.send_message(message.chat.id, "\n".join(lines), reply_markup=buy_menu_markup())
+
 
 @bot.message_handler(commands=["mylicense"])
 def cmd_mylicense(message):
@@ -665,8 +985,14 @@ def cmd_mylicense(message):
         status = "Còn hạn" if exp > now else "Hết hạn"
         tool = get_tool(r["tool_code"]) or {}
         name = tool.get("name") or r["tool_code"]
-        lines.append(f"• <b>{name}</b> ({r['tool_code']})\n  Machine ID: <code>{r.get('machine_id') or '-'}</code>\n  Hết hạn: <b>{fmt_dt(r['expires_at'])}</b>\n  Trạng thái: <b>{status}</b> | Còn: <b>{remain}</b> ngày")
+        lines.append(
+            f"• <b>{name}</b> ({r['tool_code']})\n"
+            f"  Machine ID: <code>{r.get('machine_id') or '-'}</code>\n"
+            f"  Hết hạn: <b>{fmt_dt(r['expires_at'])}</b>\n"
+            f"  Trạng thái: <b>{status}</b> | Còn: <b>{remain}</b> ngày"
+        )
     bot.send_message(message.chat.id, "\n\n".join(lines), reply_markup=main_menu_markup(message.from_user.id))
+
 
 @bot.callback_query_handler(func=lambda c: True)
 def callbacks(call):
@@ -674,11 +1000,15 @@ def callbacks(call):
     ensure_user(call.from_user)
     try:
         if call.data == "back_main":
+            clear_buy_state(user_id)
             bot.edit_message_text("Chọn chức năng bên dưới:", call.message.chat.id, call.message.message_id, reply_markup=main_menu_markup(user_id))
             return
+
         if call.data == "menu_buy":
+            clear_buy_state(user_id)
             bot.edit_message_text("<b>Chọn tool bạn muốn mua</b>", call.message.chat.id, call.message.message_id, reply_markup=buy_menu_markup())
             return
+
         if call.data == "menu_my":
             rows = get_user_licenses(user_id)
             if not rows:
@@ -689,56 +1019,89 @@ def callbacks(call):
                 for r in rows:
                     exp = datetime.fromisoformat(r["expires_at"])
                     remain = (exp.date() - now.date()).days
-                    parts.append(f"• <b>{r['tool_code']}</b> | hết hạn {fmt_dt(r['expires_at'])} | còn {remain} ngày\n  Machine ID: <code>{r.get('machine_id') or '-'}</code>")
+                    parts.append(
+                        f"• <b>{r['tool_code']}</b> | hết hạn {fmt_dt(r['expires_at'])} | còn {remain} ngày\n"
+                        f"  Machine ID: <code>{r.get('machine_id') or '-'}</code>"
+                    )
                 txt = "\n\n".join(parts)
             bot.edit_message_text(txt, call.message.chat.id, call.message.message_id, reply_markup=main_menu_markup(user_id))
             return
+
         if call.data == "menu_coupon_help":
             bot.send_message(call.message.chat.id, "Khi mua tool, bot sẽ hỏi mã giảm giá trước khi tới bước thanh toán.")
             return
+
         if call.data == "menu_contact":
             bot.send_message(call.message.chat.id, "Nhắn trực tiếp admin để được hỗ trợ nhanh.")
             return
+
         if call.data == "menu_admin":
             if not is_admin(user_id):
                 return
             bot.edit_message_text("<b>Khu vực admin</b>", call.message.chat.id, call.message.message_id, reply_markup=admin_menu_markup())
             return
+
         if call.data == "admin_broadcast":
             if not is_admin(user_id):
                 return
-            msg = bot.send_message(call.message.chat.id, "Gửi nội dung broadcast ngay sau tin nhắn này:")
-            bot.register_next_step_handler(msg, handle_admin_broadcast)
+            bot.send_message(call.message.chat.id, "Gửi nội dung broadcast ngay sau tin nhắn này:")
+            set_buy_state(user_id, {"step": "await_admin_broadcast"})
             return
+
         if call.data == "admin_run_remind":
             if not is_admin(user_id):
                 return
             process_expiry_reminders()
             bot.send_message(call.message.chat.id, "Đã chạy nhắc hạn xong.")
             return
+
         if call.data.startswith("buytool:"):
             tool_code = call.data.split(":", 1)[1]
             tool = get_tool(tool_code)
             if not tool:
                 return
-            bot.edit_message_text(f"<b>{tool['name']}</b>\nGiá: <b>{fmt_money(tool['price'])}/tháng</b>\n\nChọn thời hạn:", call.message.chat.id, call.message.message_id, reply_markup=months_markup(tool['code']))
+            clear_buy_state(user_id)
+            bot.edit_message_text(
+                f"<b>{tool['name']}</b>\nGiá: <b>{fmt_money(tool['price'])}/tháng</b>\n\nChọn thời hạn:",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=months_markup(tool['code']),
+            )
             return
+
         if call.data.startswith("months:"):
             _, tool_code, months = call.data.split(":")
             tool = get_tool(tool_code)
             if not tool:
                 return
-            BUY_STATE[user_id] = {"tool_code": tool_code, "months": int(months), "coupon_code": None, "machine_id": None}
-            msg = bot.send_message(call.message.chat.id, f"Bạn đã chọn <b>{tool['name']}</b> — <b>{months}</b> tháng.\n\nVui lòng nhập <b>Machine ID</b>.\nVí dụ:\n<code>Machine ID=B8A8334E67D60DCE1D38FFE40CDA3F1F</code>")
-            bot.register_next_step_handler(msg, handle_machine_id_step)
+            set_buy_state(
+                user_id,
+                {
+                    "step": "await_machine_id",
+                    "tool_code": tool_code,
+                    "months": int(months),
+                    "coupon_code": None,
+                    "machine_id": None,
+                    "chat_id": call.message.chat.id,
+                },
+            )
+            prompt_for_machine_id(call.message.chat.id, tool, int(months))
             return
+
         if call.data == "enter_coupon":
-            msg = bot.send_message(call.message.chat.id, "Nhập mã giảm giá:")
-            bot.register_next_step_handler(msg, handle_coupon_step)
+            state = get_buy_state(user_id)
+            if not state:
+                bot.send_message(call.message.chat.id, "Flow mua hàng đã hết hạn.", reply_markup=buy_menu_markup())
+                return
+            state["step"] = "await_coupon"
+            set_buy_state(user_id, state)
+            bot.send_message(call.message.chat.id, "Nhập mã giảm giá hoặc gửi <code>SKIP</code> để bỏ qua:")
             return
+
         if call.data == "skip_coupon":
             create_order_and_show_payment(call.message.chat.id, user_id, call.from_user)
             return
+
         if call.data.startswith("checkorder:"):
             order_code = call.data.split(":", 1)[1]
             order = get_order(order_code)
@@ -752,60 +1115,32 @@ def callbacks(call):
                     if st == "PAID" or amount_paid >= int(order["final_price"]):
                         approve_paid_order(order["order_code"], payment_ref="manual_check", source="payos_status_sync")
                         order = get_order(order_code)
-            txt = f"Mã đơn: <code>{order['order_code']}</code>\nTrạng thái đơn: <b>{order['status']}</b>\nTrạng thái thanh toán: <b>{order['payment_status']}</b>\nTool: <b>{order['tool_code']}</b>\nMachine ID: <code>{order['machine_id']}</code>\nSố tiền: <b>{fmt_money(order['final_price'])}</b>"
+            txt = (
+                f"Mã đơn: <code>{order['order_code']}</code>\n"
+                f"Trạng thái đơn: <b>{order['status']}</b>\n"
+                f"Trạng thái thanh toán: <b>{order['payment_status']}</b>\n"
+                f"Tool: <b>{order['tool_code']}</b>\n"
+                f"Machine ID: <code>{order['machine_id']}</code>\n"
+                f"Số tiền: <b>{fmt_money(order['final_price'])}</b>"
+            )
             bot.send_message(call.message.chat.id, txt, reply_markup=payment_markup(order_code, order.get("checkout_url", "")))
             return
     except Exception as e:
         bot.send_message(call.message.chat.id, f"Lỗi xử lý callback: <code>{e}</code>")
 
-def handle_machine_id_step(message):
-    user_id = message.from_user.id
-    state = BUY_STATE.get(user_id)
-    if not state:
-        bot.send_message(message.chat.id, "Flow mua hàng đã hết hạn.", reply_markup=buy_menu_markup())
-        return
-    machine_id = norm_machine_id(message.text)
-    if not is_valid_machine_id(machine_id):
-        msg = bot.send_message(message.chat.id, "Machine ID chưa hợp lệ.\nVí dụ:\n<code>B8A8334E67D60DCE1D38FFE40CDA3F1F</code>\n\nNhập lại:")
-        bot.register_next_step_handler(msg, handle_machine_id_step)
-        return
-    state["machine_id"] = machine_id
-    BUY_STATE[user_id] = state
-    bot.send_message(message.chat.id, f"✅ Đã nhận Machine ID:\n<code>{machine_id}</code>\n\nBạn có muốn nhập mã giảm giá không?", reply_markup=coupon_decision_markup())
-
-def handle_coupon_step(message):
-    user_id = message.from_user.id
-    state = BUY_STATE.get(user_id)
-    if not state:
-        bot.send_message(message.chat.id, "Flow mua hàng đã hết hạn.")
-        return
-    code = safe_upper(message.text)
-    tool = get_tool(state["tool_code"])
-    base_price = int(tool["price"]) * int(state["months"])
-    ok, msg, discount = validate_coupon(user_id, code, base_price)
-    if not ok:
-        msg_obj = bot.send_message(message.chat.id, f"❌ {msg}\nNhập lại mã khác hoặc gửi <code>SKIP</code> để bỏ qua:")
-        bot.register_next_step_handler(msg_obj, handle_coupon_retry_step)
-        return
-    state["coupon_code"] = code
-    BUY_STATE[user_id] = state
-    bot.send_message(message.chat.id, f"✅ Áp dụng mã <b>{code}</b> thành công.\nGiảm: <b>{fmt_money(discount)}</b>")
-    create_order_and_show_payment(message.chat.id, user_id, message.from_user)
-
-def handle_coupon_retry_step(message):
-    if message.text.strip().upper() == "SKIP":
-        create_order_and_show_payment(message.chat.id, message.from_user.id, message.from_user)
-        return
-    handle_coupon_step(message)
 
 def create_order_and_show_payment(chat_id, user_id, user_obj):
-    state = BUY_STATE.get(user_id)
+    state = get_buy_state(user_id)
     if not state:
         bot.send_message(chat_id, "Flow mua hàng đã hết hạn.")
         return
     tool = get_tool(state["tool_code"])
     if not tool:
+        clear_buy_state(user_id)
         bot.send_message(chat_id, "Tool không còn tồn tại.")
+        return
+    if not state.get("machine_id"):
+        bot.send_message(chat_id, "Bạn chưa nhập Machine ID.")
         return
     base_price = int(tool["price"]) * int(state["months"])
     discount_amount = 0
@@ -813,14 +1148,35 @@ def create_order_and_show_payment(chat_id, user_id, user_obj):
         ok, msg, discount_amount = validate_coupon(user_id, state["coupon_code"], base_price)
         if not ok:
             state["coupon_code"] = None
-            BUY_STATE[user_id] = state
+            set_buy_state(user_id, state)
             bot.send_message(chat_id, f"Mã giảm giá không còn hợp lệ: {msg}")
             discount_amount = 0
     final_price = max(0, base_price - discount_amount)
-    order = create_order(user_id, getattr(user_obj, "username", "") or "", user_label(user_obj), tool["code"], state["machine_id"], state["months"], base_price, state.get("coupon_code"), discount_amount, final_price)
+    order = create_order(
+        user_id,
+        getattr(user_obj, "username", "") or "",
+        user_label(user_obj),
+        tool["code"],
+        state["machine_id"],
+        state["months"],
+        base_price,
+        state.get("coupon_code"),
+        discount_amount,
+        final_price,
+    )
     bot.send_message(chat_id, build_payment_text(order), reply_markup=payment_markup(order["order_code"], order.get("checkout_url", "")))
-    notify_admins(f"🧾 Đơn mới chờ thanh toán\nOrder: <code>{order['order_code']}</code>\nUser: <code>{user_id}</code>\nTool: <b>{order['tool_code']}</b>\nTháng: <b>{order['months']}</b>\nMachine ID: <code>{order['machine_id']}</code>\nCoupon: <b>{order.get('coupon_code') or 'Không'}</b>\nTổng tiền: <b>{fmt_money(order['final_price'])}</b>")
-    BUY_STATE.pop(user_id, None)
+    notify_admins(
+        f"🧾 Đơn mới chờ thanh toán\n"
+        f"Order: <code>{order['order_code']}</code>\n"
+        f"User: <code>{user_id}</code>\n"
+        f"Tool: <b>{order['tool_code']}</b>\n"
+        f"Tháng: <b>{order['months']}</b>\n"
+        f"Machine ID: <code>{order['machine_id']}</code>\n"
+        f"Coupon: <b>{order.get('coupon_code') or 'Không'}</b>\n"
+        f"Tổng tiền: <b>{fmt_money(order['final_price'])}</b>"
+    )
+    clear_buy_state(user_id)
+
 
 @bot.message_handler(commands=["addtool"])
 def cmd_addtool(message):
@@ -842,6 +1198,7 @@ def cmd_addtool(message):
     except ValueError:
         bot.reply_to(message, "Mã tool đã tồn tại.")
 
+
 @bot.message_handler(commands=["setprice"])
 def cmd_setprice(message):
     if not admin_only(message):
@@ -853,6 +1210,7 @@ def cmd_setprice(message):
         return
     ok = set_tool_price(parts[0], int(parts[1]))
     bot.reply_to(message, "Đã cập nhật giá." if ok else "Không tìm thấy tool.")
+
 
 @bot.message_handler(commands=["adduser"])
 def cmd_adduser(message):
@@ -896,6 +1254,7 @@ def cmd_adduser(message):
         f"Hạn mới: <b>{fmt_dt(new_exp.isoformat())}</b>"
     )
 
+
 @bot.message_handler(commands=["extend"])
 def cmd_extend(message):
     if not admin_only(message):
@@ -938,6 +1297,7 @@ def cmd_extend(message):
         f"Hạn mới: <b>{fmt_dt(new_exp.isoformat())}</b>"
     )
 
+
 @bot.message_handler(commands=["coupon"])
 def cmd_coupon(message):
     if not admin_only(message):
@@ -958,7 +1318,9 @@ def cmd_coupon(message):
     expires_at = None
     if exp_date != "-":
         try:
-            expires_at = datetime.strptime(exp_date, "%Y-%m-%d").replace(tzinfo=TZ, hour=23, minute=59, second=59).isoformat()
+            expires_at = datetime.strptime(exp_date, "%Y-%m-%d").replace(
+                tzinfo=TZ, hour=23, minute=59, second=59
+            ).isoformat()
         except ValueError:
             bot.reply_to(message, "Ngày hết hạn phải dạng YYYY-MM-DD hoặc dùng -")
             return
@@ -967,6 +1329,7 @@ def cmd_coupon(message):
         bot.reply_to(message, f"Đã tạo coupon <b>{safe_upper(code)}</b>.")
     except ValueError:
         bot.reply_to(message, "Coupon đã tồn tại.")
+
 
 @bot.message_handler(commands=["approve"])
 def cmd_approve(message):
@@ -978,6 +1341,7 @@ def cmd_approve(message):
         return
     ok, msg = approve_paid_order(parts[1], source="admin")
     bot.reply_to(message, msg)
+
 
 @bot.message_handler(commands=["broadcast"])
 def cmd_broadcast(message):
@@ -999,20 +1363,6 @@ def cmd_broadcast(message):
             failed += 1
     bot.reply_to(message, f"Broadcast xong.\nThành công: {sent}\nThất bại: {failed}")
 
-def handle_admin_broadcast(message):
-    if not admin_only(message):
-        return
-    sent = 0
-    failed = 0
-    for uid, u in get_users().items():
-        if int(u.get("is_blocked", 0)) == 1:
-            continue
-        try:
-            bot.send_message(int(uid), message.text)
-            sent += 1
-        except Exception:
-            failed += 1
-    bot.send_message(message.chat.id, f"Broadcast xong.\nThành công: {sent}\nThất bại: {failed}")
 
 @bot.message_handler(commands=["run_reminders"])
 def cmd_run_reminders(message):
@@ -1021,28 +1371,57 @@ def cmd_run_reminders(message):
     process_expiry_reminders()
     bot.reply_to(message, "Đã chạy nhắc hạn xong.")
 
+
 @bot.message_handler(func=lambda m: True, content_types=["text"])
 def fallback(message):
     ensure_user(message.from_user)
+
+    state = get_buy_state(message.from_user.id)
+    if state.get("step") == "await_admin_broadcast" and is_admin(message.from_user.id):
+        clear_buy_state(message.from_user.id)
+        sent = 0
+        failed = 0
+        for uid, u in get_users().items():
+            if int(u.get("is_blocked", 0)) == 1:
+                continue
+            try:
+                bot.send_message(int(uid), message.text)
+                sent += 1
+            except Exception:
+                failed += 1
+        bot.send_message(message.chat.id, f"Broadcast xong.\nThành công: {sent}\nThất bại: {failed}")
+        return
+
+    if handle_stateful_text(message):
+        return
+
     bot.send_message(message.chat.id, "Chọn menu bên dưới hoặc dùng /help để xem lệnh.", reply_markup=main_menu_markup(message.from_user.id))
+
 
 @app.route("/", methods=["GET"])
 def home():
-    maybe_run_reminders()
-    return jsonify({
-        "status": "running",
-        "storage": "github_gist",
-        "gist_id": GIST_ID,
-        "gist_owner": GIST_OWNER,
-        "telegram_webhook_path": TELEGRAM_WEBHOOK_PATH,
-        "telegram_webhook_url": TELEGRAM_WEBHOOK_URL,
-        "reminder_webhook_path": REMINDER_WEBHOOK_PATH,
-        "payos_webhook_path": PAYOS_WEBHOOK_PATH,
-        "time": iso_now(),
-    })
+    return jsonify(
+        {
+            "status": "running",
+            "storage": "github_gist",
+            "gist_id": GIST_ID,
+            "gist_owner": GIST_OWNER,
+            "telegram_webhook_path": TELEGRAM_WEBHOOK_PATH,
+            "telegram_webhook_url": TELEGRAM_WEBHOOK_URL,
+            "reminder_webhook_path": REMINDER_WEBHOOK_PATH,
+            "payos_webhook_path": PAYOS_WEBHOOK_PATH,
+            "time": iso_now(),
+        }
+    )
+
 
 @app.route(TELEGRAM_WEBHOOK_PATH, methods=["POST"])
 def telegram_webhook():
+    if TELEGRAM_SECRET_TOKEN:
+        received = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if received != TELEGRAM_SECRET_TOKEN:
+            return jsonify({"ok": False, "message": "unauthorized"}), 401
+
     if request.headers.get("content-type", "").lower().startswith("application/json"):
         payload = request.get_data(as_text=True)
         if payload:
@@ -1051,39 +1430,45 @@ def telegram_webhook():
             return jsonify({"ok": True})
     return jsonify({"ok": False, "message": "invalid update"}), 400
 
+
 @app.route(PAYOS_WEBHOOK_PATH, methods=["POST"])
 def payos_webhook():
-    maybe_run_reminders()
     payload = request.get_json(silent=True) or {}
     if not verify_payos_webhook_signature(payload):
         return jsonify({"error": 1, "message": "invalid signature"}), 400
+
     data = payload.get("data") or {}
     payos_order_code = data.get("orderCode")
     amount = int(data.get("amount") or data.get("amountPaid") or 0)
     payment_ref = str(data.get("reference") or data.get("paymentLinkId") or data.get("code") or "")
     desc = str(data.get("description") or "")
     status = str(data.get("status") or "").upper()
+
     order = get_order_by_payos_code(payos_order_code)
     if not order:
         return jsonify({"error": 0, "message": "order not found but webhook accepted"})
     if order["status"] == "paid":
         return jsonify({"error": 0, "message": "already paid"})
+
     if status == "PAID" or amount >= int(order["final_price"]) or (desc and order["order_code"][:8] in desc):
         ok, msg = approve_paid_order(order["order_code"], payment_ref=payment_ref, source="payos_webhook")
         return jsonify({"error": 0 if ok else 1, "message": msg})
+
     order["payment_status"] = status.lower() if status else "pending"
     order["payment_ref"] = payment_ref
     order["updated_at"] = iso_now()
     save_order(order)
     return jsonify({"error": 0, "message": f"status updated {status or 'PENDING'}"})
 
+
 @app.route(REMINDER_WEBHOOK_PATH, methods=["GET", "POST"])
 def reminder_webhook():
     secret = request.args.get("secret", "") or request.headers.get("X-Reminder-Secret", "")
     if REMINDER_WEBHOOK_SECRET and secret != REMINDER_WEBHOOK_SECRET:
         return jsonify({"ok": False, "message": "unauthorized"}), 401
-    ok = maybe_run_reminders(force=True)
-    return jsonify({"ok": ok, "message": "reminders processed" if ok else "reminders skipped"})
+    process_expiry_reminders()
+    return jsonify({"ok": True, "message": "reminders processed"})
+
 
 @app.route("/payment-return", methods=["GET"])
 def payment_return():
@@ -1093,25 +1478,40 @@ def payment_return():
         return "Order không tồn tại.", 404
     return f"Đơn {order['order_code']} | trạng thái {order['status']} | payment {order['payment_status']}"
 
+
 @app.route("/payment-cancel", methods=["GET"])
 def payment_cancel():
     return "Thanh toán đã bị hủy."
+
 
 def set_telegram_webhook():
     if not TELEGRAM_WEBHOOK_URL:
         raise RuntimeError("Thiếu PUBLIC_BASE_URL nên không thể set Telegram webhook.")
     try:
+        info = bot.get_webhook_info()
+        current_url = getattr(info, "url", "") or ""
+        current_pending = getattr(info, "pending_update_count", 0)
+        if current_url == TELEGRAM_WEBHOOK_URL and current_pending >= 0:
+            return True
+
         bot.remove_webhook()
         time.sleep(1)
-        ok = bot.set_webhook(url=TELEGRAM_WEBHOOK_URL)
+
+        kwargs = {"url": TELEGRAM_WEBHOOK_URL}
+        if TELEGRAM_SECRET_TOKEN:
+            kwargs["secret_token"] = TELEGRAM_SECRET_TOKEN
+
+        ok = bot.set_webhook(**kwargs)
         if not ok:
             raise RuntimeError("Telegram từ chối set webhook.")
         return True
     except Exception as e:
         raise RuntimeError(f"Set Telegram webhook lỗi: {e}")
 
+
 def run_flask():
     app.run(host=FLASK_HOST, port=FLASK_PORT, debug=False, use_reloader=False)
+
 
 if __name__ == "__main__":
     bootstrap_gist()
