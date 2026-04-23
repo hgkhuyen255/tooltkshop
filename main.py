@@ -1,6 +1,4 @@
 # -*- coding: utf-8 -*-
-# Simplified complete bot file: 2 tools, category-first, Gist storage, payOS auto-approve
-
 import os
 import re
 import hmac
@@ -48,31 +46,13 @@ BANK_NAME = os.getenv("BANK_NAME", "").strip()
 BANK_ACCOUNT_NO = os.getenv("BANK_ACCOUNT_NO", "").strip()
 BANK_ACCOUNT_NAME = os.getenv("BANK_ACCOUNT_NAME", "").strip()
 PAYMENT_NOTE_PREFIX = os.getenv("PAYMENT_NOTE_PREFIX", "TOOL")
+
 REMINDER_CHECK_INTERVAL_SECONDS = int(os.getenv("REMINDER_CHECK_INTERVAL_SECONDS", "3600"))
 REMINDER_DAYS = [7, 3, 1, 0]
 
-PRODUCT_CATEGORIES = {
-    "video_ai": {"name": "🎬 Tool tạo video AI", "items": ["GROKTOOL"]},
-    "upload_video": {"name": "📤 Tool đăng video", "items": ["FBREELTOOL"]},
-}
-
 DEFAULT_TOOLS = {
-    "GROKTOOL": {
-        "code": "GROKTOOL",
-        "name": "Tool Auto Grok",
-        "price": 50000,
-        "description": "Tool tạo video tự động có mã khóa theo máy",
-        "active": 1,
-        "category": "video_ai",
-    },
-    "FBREELTOOL": {
-        "code": "FBREELTOOL",
-        "name": "Tool Auto Reels Facebook",
-        "price": 50000,
-        "description": "Tool đăng reels tự động có mã khóa theo máy",
-        "active": 1,
-        "category": "upload_video",
-    },
+    "GROKTOOL": {"code": "GROKTOOL", "name": "Tool Auto Grok", "price": 50000, "description": "Tool tạo video tự động", "active": 1},
+    "FBREELTOOL": {"code": "FBREELTOOL", "name": "Tool Auto Reels Facebook", "price": 50000, "description": "Tool up reels tự động", "active": 1},
 }
 
 if not BOT_TOKEN:
@@ -206,12 +186,7 @@ def save_users(data):
     save_gist_json(USERS_FILE, data)
 
 def get_tools():
-    data = load_gist_json(TOOLS_FILE, DEFAULT_TOOLS.copy())
-    if isinstance(data, dict):
-        for code, item in DEFAULT_TOOLS.items():
-            if code not in data:
-                data[code] = item
-    return data
+    return load_gist_json(TOOLS_FILE, DEFAULT_TOOLS.copy())
 
 def save_tools(data):
     save_gist_json(TOOLS_FILE, data)
@@ -261,9 +236,6 @@ def ensure_user(user):
 def list_tools():
     return [v for v in get_tools().values() if int(v.get("active", 1)) == 1]
 
-def list_tools_by_category(category_code):
-    return [v for v in list_tools() if v.get("category") == category_code]
-
 def get_tool(code):
     return (get_tools() or {}).get(safe_upper(code))
 
@@ -276,7 +248,7 @@ def set_tool_price(code, price):
     save_tools(data)
     return True
 
-def add_tool(code, name, price, description="", category="video_ai"):
+def add_tool(code, name, price, description=""):
     data = get_tools()
     code = safe_upper(code)
     if code in data:
@@ -287,7 +259,6 @@ def add_tool(code, name, price, description="", category="video_ai"):
         "price": int(price),
         "description": description.strip(),
         "active": 1,
-        "category": category,
         "created_at": iso_now(),
     }
     save_tools(data)
@@ -543,25 +514,10 @@ def approve_paid_order(order_code, payment_ref=None, source="payos"):
     order["updated_at"] = iso_now()
     save_order(order)
     try:
-        bot.send_message(order["user_id"], f"✅ <b>Thanh toán thành công</b>
-Mã đơn: <code>{order['order_code']}</code>
-Tool: <b>{order['tool_code']}</b>
-Machine ID: <code>{order['machine_id']}</code>
-Thời hạn: <b>{order['months']}</b> tháng
-Hết hạn mới: <b>{fmt_dt(new_exp.isoformat())}</b>
-Ref: <code>{payment_ref or '-'}</code>", reply_markup=main_menu_markup(order["user_id"]))
+        bot.send_message(order["user_id"], f"✅ <b>Thanh toán thành công</b>\nMã đơn: <code>{order['order_code']}</code>\nTool: <b>{order['tool_code']}</b>\nMachine ID: <code>{order['machine_id']}</code>\nThời hạn: <b>{order['months']}</b> tháng\nHết hạn mới: <b>{fmt_dt(new_exp.isoformat())}</b>\nRef: <code>{payment_ref or '-'}</code>", reply_markup=main_menu_markup(order["user_id"]))
     except Exception:
         pass
-    notify_admins(f"💰 <b>Đơn đã tự duyệt</b>
-Nguồn: <b>{source}</b>
-Order: <code>{order['order_code']}</code>
-User: <code>{order['user_id']}</code>
-Tool: <b>{order['tool_code']}</b>
-Machine ID: <code>{order['machine_id']}</code>
-Số tháng: <b>{order['months']}</b>
-Số tiền: <b>{fmt_money(order['final_price'])}</b>
-Ref: <code>{payment_ref or '-'}</code>
-Hết hạn mới: <b>{fmt_dt(new_exp.isoformat())}</b>")
+    notify_admins(f"💰 <b>Đơn đã tự duyệt</b>\nNguồn: <b>{source}</b>\nOrder: <code>{order['order_code']}</code>\nUser: <code>{order['user_id']}</code>\nTool: <b>{order['tool_code']}</b>\nMachine ID: <code>{order['machine_id']}</code>\nSố tháng: <b>{order['months']}</b>\nSố tiền: <b>{fmt_money(order['final_price'])}</b>\nRef: <code>{payment_ref or '-'}</code>\nHết hạn mới: <b>{fmt_dt(new_exp.isoformat())}</b>")
     return True, "OK"
 
 def reminder_sent(user_id, tool_code, reminder_key):
@@ -582,7 +538,7 @@ def process_expiry_reminders():
         except Exception:
             continue
         delta_days = (exp.date() - now.date()).days
-        if delta_days not in REMINDER_DAYS:
+        if delta_days not in [7, 3, 1, 0]:
             continue
         reminder_key = f"{delta_days}_{now.date().isoformat()}"
         if reminder_sent(r["user_id"], r["tool_code"], reminder_key):
@@ -590,16 +546,9 @@ def process_expiry_reminders():
         tool = get_tool(r["tool_code"]) or {}
         tool_name = tool.get("name") or r["tool_code"]
         if delta_days > 0:
-            user_text = f"⏰ <b>Nhắc hạn tool</b>
-Tool: <b>{tool_name}</b>
-Machine ID: <code>{r.get('machine_id') or '-'}</code>
-Còn <b>{delta_days}</b> ngày sẽ hết hạn.
-Hết hạn lúc: <b>{fmt_dt(r['expires_at'])}</b>"
+            user_text = f"⏰ <b>Nhắc hạn tool</b>\nTool: <b>{tool_name}</b>\nMachine ID: <code>{r.get('machine_id') or '-'}</code>\nCòn <b>{delta_days}</b> ngày sẽ hết hạn.\nHết hạn lúc: <b>{fmt_dt(r['expires_at'])}</b>"
         else:
-            user_text = f"⚠️ <b>Tool đã hết hạn</b>
-Tool: <b>{tool_name}</b>
-Machine ID: <code>{r.get('machine_id') or '-'}</code>
-Hết hạn lúc: <b>{fmt_dt(r['expires_at'])}</b>"
+            user_text = f"⚠️ <b>Tool đã hết hạn</b>\nTool: <b>{tool_name}</b>\nMachine ID: <code>{r.get('machine_id') or '-'}</code>\nHết hạn lúc: <b>{fmt_dt(r['expires_at'])}</b>"
         try:
             bot.send_message(int(r["user_id"]), user_text, reply_markup=main_menu_markup(int(r["user_id"])))
         except Exception:
@@ -607,9 +556,7 @@ Hết hạn lúc: <b>{fmt_dt(r['expires_at'])}</b>"
         admin_lines.append(f"• User <code>{r['user_id']}</code> | {r['tool_code']} | còn {delta_days} ngày | hết hạn {fmt_dt(r['expires_at'])}")
         mark_reminder_sent(r["user_id"], r["tool_code"], reminder_key)
     if admin_lines:
-        notify_admins("📋 <b>Danh sách user sắp hết hạn</b>
-" + "
-".join(admin_lines))
+        notify_admins("📋 <b>Danh sách user sắp hết hạn</b>\n" + "\n".join(admin_lines))
 
 def reminder_loop():
     while True:
@@ -619,55 +566,78 @@ def reminder_loop():
             notify_admins(f"⚠️ Reminder loop lỗi: <code>{e}</code>")
         time.sleep(REMINDER_CHECK_INTERVAL_SECONDS)
 
-@bot.message_handler(commands=["start"])
-def cmd_start(message):
-    ensure_user(message.from_user)
-    bot.send_message(message.chat.id, f"Xin chào <b>{user_label(message.from_user)}</b>
+def main_menu_markup(user_id):
+    mk = types.InlineKeyboardMarkup(row_width=2)
+    mk.add(types.InlineKeyboardButton("🛍 Mua tool", callback_data="menu_buy"), types.InlineKeyboardButton("📅 Hạn dùng của tôi", callback_data="menu_my"))
+    mk.add(types.InlineKeyboardButton("🎁 Mã giảm giá", callback_data="menu_coupon_help"), types.InlineKeyboardButton("☎️ Liên hệ admin", callback_data="menu_contact"))
+    if is_admin(user_id):
+        mk.add(types.InlineKeyboardButton("🛠 Admin", callback_data="menu_admin"))
+    return mk
 
-Bot này lưu users, tools, licenses, coupons, orders, reminders bằng <b>GitHub Gist JSON</b>.
-Hiện đang bán trước 2 loại tool có Machine ID.", reply_markup=main_menu_markup(message.from_user.id))
-
-@bot.message_handler(commands=["help"])
-def cmd_help(message):
-    bot.send_message(message.chat.id, "<b>Lệnh user</b>
-/start
-/tools
-/mylicense
-
-<b>Lệnh admin</b>
-/addtool CODE | Tên tool | Giá | Mô tả
-/setprice CODE | Giá_mới
-/adduser user_id | TOOL_CODE | số_ngày | MACHINE_ID(optional)
-/extend user_id | TOOL_CODE | số_ngày | MACHINE_ID(optional)
-/coupon CODE | percent|fixed | value | max_uses | YYYY-MM-DD hoặc -
-/approve ORDER_CODE
-/broadcast nội dung
-/run_reminders
-")
-
-@bot.message_handler(commands=["tools"])
-def cmd_tools(message):
-    lines = ["<b>2 tool đang bán</b>"]
-    for t in list_tools():
-        desc = f"
-  {t['description']}" if t.get("description") else ""
-        lines.append(f"• <b>{t['code']}</b> — {t['name']} — {fmt_money(t['price'])}/tháng{desc}")
-    bot.send_message(message.chat.id, "
-".join(lines), reply_markup=category_menu_markup())
-
-def category_menu_markup():
+def buy_menu_markup():
     mk = types.InlineKeyboardMarkup(row_width=1)
-    for category_code, category in PRODUCT_CATEGORIES.items():
-        mk.add(types.InlineKeyboardButton(category["name"], callback_data=f"category:{category_code}"))
+    for t in list_tools():
+        mk.add(types.InlineKeyboardButton(f"{t['name']} • {fmt_money(t['price'])}/tháng", callback_data=f"buytool:{t['code']}"))
     mk.add(types.InlineKeyboardButton("⬅️ Về menu", callback_data="back_main"))
     return mk
 
-def tool_menu_by_category_markup(category_code):
-    mk = types.InlineKeyboardMarkup(row_width=1)
-    for t in list_tools_by_category(category_code):
-        mk.add(types.InlineKeyboardButton(f"{t['name']} • {fmt_money(t['price'])}/tháng", callback_data=f"buytool:{t['code']}"))
-    mk.add(types.InlineKeyboardButton("⬅️ Chọn phân loại khác", callback_data="menu_buy"))
+def months_markup(tool_code):
+    mk = types.InlineKeyboardMarkup(row_width=3)
+    for m in [1, 3, 6, 12]:
+        mk.add(types.InlineKeyboardButton(f"{m} tháng", callback_data=f"months:{tool_code}:{m}"))
+    mk.add(types.InlineKeyboardButton("⬅️ Chọn tool khác", callback_data="menu_buy"))
     return mk
+
+def coupon_decision_markup():
+    mk = types.InlineKeyboardMarkup(row_width=2)
+    mk.add(types.InlineKeyboardButton("🎁 Nhập mã giảm giá", callback_data="enter_coupon"), types.InlineKeyboardButton("➡️ Bỏ qua", callback_data="skip_coupon"))
+    return mk
+
+def payment_markup(order_code, checkout_url=""):
+    mk = types.InlineKeyboardMarkup(row_width=1)
+    if checkout_url:
+        mk.add(types.InlineKeyboardButton("💳 Thanh toán qua payOS", url=checkout_url))
+    mk.add(types.InlineKeyboardButton("🔄 Kiểm tra trạng thái", callback_data=f"checkorder:{order_code}"))
+    mk.add(types.InlineKeyboardButton("⬅️ Về menu", callback_data="back_main"))
+    return mk
+
+def admin_menu_markup():
+    mk = types.InlineKeyboardMarkup(row_width=2)
+    mk.add(types.InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"), types.InlineKeyboardButton("⏰ Chạy nhắc hạn", callback_data="admin_run_remind"))
+    mk.add(types.InlineKeyboardButton("⬅️ Về menu", callback_data="back_main"))
+    return mk
+
+def build_payment_text(order):
+    transfer_note = f"{PAYMENT_NOTE_PREFIX} {order['order_code']}"
+    lines = ["<b>Đơn hàng của bạn</b>", f"Mã đơn: <code>{order['order_code']}</code>", f"Tool: <b>{order['tool_code']}</b>", f"Số tháng: <b>{order['months']}</b>", f"Machine ID: <code>{order['machine_id']}</code>", f"Giá gốc: <b>{fmt_money(order['base_price'])}</b>", f"Giảm giá: <b>{fmt_money(order['discount_amount'])}</b>", f"Cần thanh toán: <b>{fmt_money(order['final_price'])}</b>"]
+    if order["payment_provider"] == "payos":
+        lines += ["", "Bấm nút bên dưới để thanh toán qua payOS. Sau khi thanh toán xong, hệ thống sẽ tự duyệt đơn."]
+    else:
+        lines += ["", "payOS chưa cấu hình đầy đủ, hiện bot dùng thông tin chuyển khoản thủ công."]
+        if BANK_NAME and BANK_ACCOUNT_NO and BANK_ACCOUNT_NAME:
+            lines += [f"Ngân hàng: <b>{BANK_NAME}</b>", f"Số tài khoản: <code>{BANK_ACCOUNT_NO}</code>", f"Chủ tài khoản: <b>{BANK_ACCOUNT_NAME}</b>", f"Nội dung CK: <code>{transfer_note}</code>"]
+    return "\n".join(lines)
+
+@bot.message_handler(commands=["start"])
+def cmd_start(message):
+    ensure_user(message.from_user)
+    bot.send_message(message.chat.id, f"Xin chào <b>{user_label(message.from_user)}</b>\n\nBot này lưu users, tools, licenses, coupons, orders, reminders bằng <b>GitHub Gist JSON</b>.", reply_markup=main_menu_markup(message.from_user.id))
+
+@bot.message_handler(commands=["help"])
+def cmd_help(message):
+    bot.send_message(message.chat.id, "<b>Lệnh user</b>\n/start\n/tools\n/mylicense\n\n<b>Lệnh admin</b>\n/addtool CODE | Tên tool | Giá | Mô tả\n/setprice CODE | Giá_mới\n/adduser user_id | TOOL_CODE | số_ngày | MACHINE_ID(optional)\n/extend user_id | TOOL_CODE | số_ngày | MACHINE_ID(optional)\n/coupon CODE | percent|fixed | value | max_uses | YYYY-MM-DD hoặc -\n/approve ORDER_CODE\n/broadcast nội dung\n/run_reminders\n")
+
+@bot.message_handler(commands=["tools"])
+def cmd_tools(message):
+    tools = list_tools()
+    if not tools:
+        bot.send_message(message.chat.id, "Chưa có tool nào.", reply_markup=main_menu_markup(message.from_user.id))
+        return
+    lines = ["<b>Danh sách tool</b>"]
+    for t in tools:
+        desc = f"\n  {t['description']}" if t.get("description") else ""
+        lines.append(f"• <b>{t['code']}</b> — {t['name']} — {fmt_money(t['price'])}/tháng{desc}")
+    bot.send_message(message.chat.id, "\n".join(lines), reply_markup=buy_menu_markup())
 
 @bot.message_handler(commands=["mylicense"])
 def cmd_mylicense(message):
@@ -683,13 +653,8 @@ def cmd_mylicense(message):
         status = "Còn hạn" if exp > now else "Hết hạn"
         tool = get_tool(r["tool_code"]) or {}
         name = tool.get("name") or r["tool_code"]
-        lines.append(f"• <b>{name}</b> ({r['tool_code']})
-  Machine ID: <code>{r.get('machine_id') or '-'}</code>
-  Hết hạn: <b>{fmt_dt(r['expires_at'])}</b>
-  Trạng thái: <b>{status}</b> | Còn: <b>{remain}</b> ngày")
-    bot.send_message(message.chat.id, "
-
-".join(lines), reply_markup=main_menu_markup(message.from_user.id))
+        lines.append(f"• <b>{name}</b> ({r['tool_code']})\n  Machine ID: <code>{r.get('machine_id') or '-'}</code>\n  Hết hạn: <b>{fmt_dt(r['expires_at'])}</b>\n  Trạng thái: <b>{status}</b> | Còn: <b>{remain}</b> ngày")
+    bot.send_message(message.chat.id, "\n\n".join(lines), reply_markup=main_menu_markup(message.from_user.id))
 
 @bot.callback_query_handler(func=lambda c: True)
 def callbacks(call):
@@ -700,15 +665,7 @@ def callbacks(call):
             bot.edit_message_text("Chọn chức năng bên dưới:", call.message.chat.id, call.message.message_id, reply_markup=main_menu_markup(user_id))
             return
         if call.data == "menu_buy":
-            bot.edit_message_text("<b>Chọn phân loại sản phẩm</b>", call.message.chat.id, call.message.message_id, reply_markup=category_menu_markup())
-            return
-        if call.data.startswith("category:"):
-            category_code = call.data.split(":", 1)[1]
-            category = PRODUCT_CATEGORIES.get(category_code)
-            if not category:
-                return
-            bot.edit_message_text(f"<b>{category['name']}</b>
-Chọn tool:", call.message.chat.id, call.message.message_id, reply_markup=tool_menu_by_category_markup(category_code))
+            bot.edit_message_text("<b>Chọn tool bạn muốn mua</b>", call.message.chat.id, call.message.message_id, reply_markup=buy_menu_markup())
             return
         if call.data == "menu_my":
             rows = get_user_licenses(user_id)
@@ -720,11 +677,8 @@ Chọn tool:", call.message.chat.id, call.message.message_id, reply_markup=tool_
                 for r in rows:
                     exp = datetime.fromisoformat(r["expires_at"])
                     remain = (exp.date() - now.date()).days
-                    parts.append(f"• <b>{r['tool_code']}</b> | hết hạn {fmt_dt(r['expires_at'])} | còn {remain} ngày
-  Machine ID: <code>{r.get('machine_id') or '-'}</code>")
-                txt = "
-
-".join(parts)
+                    parts.append(f"• <b>{r['tool_code']}</b> | hết hạn {fmt_dt(r['expires_at'])} | còn {remain} ngày\n  Machine ID: <code>{r.get('machine_id') or '-'}</code>")
+                txt = "\n\n".join(parts)
             bot.edit_message_text(txt, call.message.chat.id, call.message.message_id, reply_markup=main_menu_markup(user_id))
             return
         if call.data == "menu_coupon_help":
@@ -755,10 +709,7 @@ Chọn tool:", call.message.chat.id, call.message.message_id, reply_markup=tool_
             tool = get_tool(tool_code)
             if not tool:
                 return
-            bot.edit_message_text(f"<b>{tool['name']}</b>
-Giá: <b>{fmt_money(tool['price'])}/tháng</b>
-
-Chọn thời hạn:", call.message.chat.id, call.message.message_id, reply_markup=months_markup(tool['code']))
+            bot.edit_message_text(f"<b>{tool['name']}</b>\nGiá: <b>{fmt_money(tool['price'])}/tháng</b>\n\nChọn thời hạn:", call.message.chat.id, call.message.message_id, reply_markup=months_markup(tool['code']))
             return
         if call.data.startswith("months:"):
             _, tool_code, months = call.data.split(":")
@@ -766,11 +717,7 @@ Chọn thời hạn:", call.message.chat.id, call.message.message_id, reply_mark
             if not tool:
                 return
             BUY_STATE[user_id] = {"tool_code": tool_code, "months": int(months), "coupon_code": None, "machine_id": None}
-            msg = bot.send_message(call.message.chat.id, f"Bạn đã chọn <b>{tool['name']}</b> — <b>{months}</b> tháng.
-
-Vui lòng nhập <b>Machine ID</b>.
-Ví dụ:
-<code>Machine ID=B8A8334E67D60DCE1D38FFE40CDA3F1F</code>")
+            msg = bot.send_message(call.message.chat.id, f"Bạn đã chọn <b>{tool['name']}</b> — <b>{months}</b> tháng.\n\nVui lòng nhập <b>Machine ID</b>.\nVí dụ:\n<code>Machine ID=B8A8334E67D60DCE1D38FFE40CDA3F1F</code>")
             bot.register_next_step_handler(msg, handle_machine_id_step)
             return
         if call.data == "enter_coupon":
@@ -793,66 +740,26 @@ Ví dụ:
                     if st == "PAID" or amount_paid >= int(order["final_price"]):
                         approve_paid_order(order["order_code"], payment_ref="manual_check", source="payos_status_sync")
                         order = get_order(order_code)
-            txt = f"Mã đơn: <code>{order['order_code']}</code>
-Trạng thái đơn: <b>{order['status']}</b>
-Trạng thái thanh toán: <b>{order['payment_status']}</b>
-Tool: <b>{order['tool_code']}</b>
-Machine ID: <code>{order['machine_id']}</code>
-Số tiền: <b>{fmt_money(order['final_price'])}</b>"
+            txt = f"Mã đơn: <code>{order['order_code']}</code>\nTrạng thái đơn: <b>{order['status']}</b>\nTrạng thái thanh toán: <b>{order['payment_status']}</b>\nTool: <b>{order['tool_code']}</b>\nMachine ID: <code>{order['machine_id']}</code>\nSố tiền: <b>{fmt_money(order['final_price'])}</b>"
             bot.send_message(call.message.chat.id, txt, reply_markup=payment_markup(order_code, order.get("checkout_url", "")))
             return
     except Exception as e:
         bot.send_message(call.message.chat.id, f"Lỗi xử lý callback: <code>{e}</code>")
 
-def months_markup(tool_code):
-    mk = types.InlineKeyboardMarkup(row_width=3)
-    for m in [1, 3, 6, 12]:
-        mk.add(types.InlineKeyboardButton(f"{m} tháng", callback_data=f"months:{tool_code}:{m}"))
-    tool = get_tool(tool_code) or {}
-    category = tool.get("category", "video_ai")
-    mk.add(types.InlineKeyboardButton("⬅️ Chọn tool khác", callback_data=f"category:{category}"))
-    return mk
-
-def coupon_decision_markup():
-    mk = types.InlineKeyboardMarkup(row_width=2)
-    mk.add(types.InlineKeyboardButton("🎁 Nhập mã giảm giá", callback_data="enter_coupon"), types.InlineKeyboardButton("➡️ Bỏ qua", callback_data="skip_coupon"))
-    return mk
-
-def payment_markup(order_code, checkout_url=""):
-    mk = types.InlineKeyboardMarkup(row_width=1)
-    if checkout_url:
-        mk.add(types.InlineKeyboardButton("💳 Thanh toán qua payOS", url=checkout_url))
-    mk.add(types.InlineKeyboardButton("🔄 Kiểm tra trạng thái", callback_data=f"checkorder:{order_code}"))
-    mk.add(types.InlineKeyboardButton("⬅️ Về menu", callback_data="back_main"))
-    return mk
-
-def admin_menu_markup():
-    mk = types.InlineKeyboardMarkup(row_width=2)
-    mk.add(types.InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"), types.InlineKeyboardButton("⏰ Chạy nhắc hạn", callback_data="admin_run_remind"))
-    mk.add(types.InlineKeyboardButton("⬅️ Về menu", callback_data="back_main"))
-    return mk
-
 def handle_machine_id_step(message):
     user_id = message.from_user.id
     state = BUY_STATE.get(user_id)
     if not state:
-        bot.send_message(message.chat.id, "Flow mua hàng đã hết hạn.", reply_markup=category_menu_markup())
+        bot.send_message(message.chat.id, "Flow mua hàng đã hết hạn.", reply_markup=buy_menu_markup())
         return
     machine_id = norm_machine_id(message.text)
     if not is_valid_machine_id(machine_id):
-        msg = bot.send_message(message.chat.id, "Machine ID chưa hợp lệ.
-Ví dụ:
-<code>B8A8334E67D60DCE1D38FFE40CDA3F1F</code>
-
-Nhập lại:")
+        msg = bot.send_message(message.chat.id, "Machine ID chưa hợp lệ.\nVí dụ:\n<code>B8A8334E67D60DCE1D38FFE40CDA3F1F</code>\n\nNhập lại:")
         bot.register_next_step_handler(msg, handle_machine_id_step)
         return
     state["machine_id"] = machine_id
     BUY_STATE[user_id] = state
-    bot.send_message(message.chat.id, f"✅ Đã nhận Machine ID:
-<code>{machine_id}</code>
-
-Bạn có muốn nhập mã giảm giá không?", reply_markup=coupon_decision_markup())
+    bot.send_message(message.chat.id, f"✅ Đã nhận Machine ID:\n<code>{machine_id}</code>\n\nBạn có muốn nhập mã giảm giá không?", reply_markup=coupon_decision_markup())
 
 def handle_coupon_step(message):
     user_id = message.from_user.id
@@ -865,14 +772,12 @@ def handle_coupon_step(message):
     base_price = int(tool["price"]) * int(state["months"])
     ok, msg, discount = validate_coupon(user_id, code, base_price)
     if not ok:
-        msg_obj = bot.send_message(message.chat.id, f"❌ {msg}
-Nhập lại mã khác hoặc gửi <code>SKIP</code> để bỏ qua:")
+        msg_obj = bot.send_message(message.chat.id, f"❌ {msg}\nNhập lại mã khác hoặc gửi <code>SKIP</code> để bỏ qua:")
         bot.register_next_step_handler(msg_obj, handle_coupon_retry_step)
         return
     state["coupon_code"] = code
     BUY_STATE[user_id] = state
-    bot.send_message(message.chat.id, f"✅ Áp dụng mã <b>{code}</b> thành công.
-Giảm: <b>{fmt_money(discount)}</b>")
+    bot.send_message(message.chat.id, f"✅ Áp dụng mã <b>{code}</b> thành công.\nGiảm: <b>{fmt_money(discount)}</b>")
     create_order_and_show_payment(message.chat.id, user_id, message.from_user)
 
 def handle_coupon_retry_step(message):
@@ -880,17 +785,6 @@ def handle_coupon_retry_step(message):
         create_order_and_show_payment(message.chat.id, message.from_user.id, message.from_user)
         return
     handle_coupon_step(message)
-
-def build_payment_text(order):
-    transfer_note = f"{PAYMENT_NOTE_PREFIX} {order['order_code']}"
-    lines = ["<b>Đơn hàng của bạn</b>", f"Mã đơn: <code>{order['order_code']}</code>", f"Tool: <b>{order['tool_code']}</b>", f"Số tháng: <b>{order['months']}</b>", f"Machine ID: <code>{order['machine_id']}</code>", f"Giá gốc: <b>{fmt_money(order['base_price'])}</b>", f"Giảm giá: <b>{fmt_money(order['discount_amount'])}</b>", f"Cần thanh toán: <b>{fmt_money(order['final_price'])}</b>"]
-    if order["payment_provider"] == "payos":
-        lines += ["", "Bấm nút bên dưới để thanh toán qua payOS. Sau khi thanh toán xong, hệ thống sẽ tự duyệt đơn."]
-    else:
-        lines += ["", "payOS chưa cấu hình đầy đủ, hiện bot dùng thông tin chuyển khoản thủ công."]
-        if BANK_NAME and BANK_ACCOUNT_NO and BANK_ACCOUNT_NAME:
-            lines += [f"Ngân hàng: <b>{BANK_NAME}</b>", f"Số tài khoản: <code>{BANK_ACCOUNT_NO}</code>", f"Chủ tài khoản: <b>{BANK_ACCOUNT_NAME}</b>", f"Nội dung CK: <code>{transfer_note}</code>"]
-    return "\n".join(lines)
 
 def create_order_and_show_payment(chat_id, user_id, user_obj):
     state = BUY_STATE.get(user_id)
@@ -915,6 +809,172 @@ def create_order_and_show_payment(chat_id, user_id, user_obj):
     bot.send_message(chat_id, build_payment_text(order), reply_markup=payment_markup(order["order_code"], order.get("checkout_url", "")))
     notify_admins(f"🧾 Đơn mới chờ thanh toán\nOrder: <code>{order['order_code']}</code>\nUser: <code>{user_id}</code>\nTool: <b>{order['tool_code']}</b>\nTháng: <b>{order['months']}</b>\nMachine ID: <code>{order['machine_id']}</code>\nCoupon: <b>{order.get('coupon_code') or 'Không'}</b>\nTổng tiền: <b>{fmt_money(order['final_price'])}</b>")
     BUY_STATE.pop(user_id, None)
+
+@bot.message_handler(commands=["addtool"])
+def cmd_addtool(message):
+    if not admin_only(message):
+        return
+    raw = message.text.replace("/addtool", "", 1).strip()
+    parts = [x.strip() for x in raw.split("|")]
+    if len(parts) < 3:
+        bot.reply_to(message, "Ví dụ:\n/addtool GROKTOOL | Tool Auto Grok | 50000 | Mô tả")
+        return
+    code, name, price_s = parts[:3]
+    desc = parts[3] if len(parts) >= 4 else ""
+    if not price_s.isdigit():
+        bot.reply_to(message, "Giá phải là số.")
+        return
+    try:
+        add_tool(code, name, int(price_s), desc)
+        bot.reply_to(message, f"Đã thêm tool <b>{safe_upper(code)}</b>.")
+    except ValueError:
+        bot.reply_to(message, "Mã tool đã tồn tại.")
+
+@bot.message_handler(commands=["setprice"])
+def cmd_setprice(message):
+    if not admin_only(message):
+        return
+    raw = message.text.replace("/setprice", "", 1).strip()
+    parts = [x.strip() for x in raw.split("|")]
+    if len(parts) != 2 or not parts[1].isdigit():
+        bot.reply_to(message, "Ví dụ:\n/setprice GROKTOOL | 59000")
+        return
+    ok = set_tool_price(parts[0], int(parts[1]))
+    bot.reply_to(message, "Đã cập nhật giá." if ok else "Không tìm thấy tool.")
+
+@bot.message_handler(commands=["adduser"])
+def cmd_adduser(message):
+    if not admin_only(message):
+        return
+    raw = message.text.replace("/adduser", "", 1).strip()
+    parts = [x.strip() for x in raw.split("|")]
+    if len(parts) < 3:
+        bot.reply_to(message, "Ví dụ:\n/adduser 123456789 | GROKTOOL | 30 | B8A8334E67D60DCE1D38FFE40CDA3F1F")
+        return
+    user_id_s, tool_code, days_s = parts[:3]
+    machine_id = parts[3] if len(parts) >= 4 else None
+    if not user_id_s.isdigit() or not re.fullmatch(r"-?\d+", days_s):
+        bot.reply_to(message, "user_id và số ngày phải hợp lệ.")
+        return
+    if machine_id and not is_valid_machine_id(machine_id):
+        bot.reply_to(message, "Machine ID không hợp lệ.")
+        return
+    if not get_tool(tool_code):
+        bot.reply_to(message, "Tool code không tồn tại.")
+        return
+    new_exp = extend_license(int(user_id_s), tool_code, int(days_s), machine_id)
+    bot.reply_to(message, f"Đã cấp user <code>{user_id_s}</code> tới <b>{fmt_dt(new_exp.isoformat())}</b>.")
+
+@bot.message_handler(commands=["extend"])
+def cmd_extend(message):
+    if not admin_only(message):
+        return
+    raw = message.text.replace("/extend", "", 1).strip()
+    parts = [x.strip() for x in raw.split("|")]
+    if len(parts) < 3:
+        bot.reply_to(message, "Ví dụ:\n/extend 123456789 | GROKTOOL | 30 | B8A8334E67D60DCE1D38FFE40CDA3F1F")
+        return
+    user_id_s, tool_code, days_s = parts[:3]
+    machine_id = parts[3] if len(parts) >= 4 else None
+    if not user_id_s.isdigit() or not re.fullmatch(r"-?\d+", days_s):
+        bot.reply_to(message, "user_id và số ngày phải hợp lệ.")
+        return
+    if machine_id and not is_valid_machine_id(machine_id):
+        bot.reply_to(message, "Machine ID không hợp lệ.")
+        return
+    if not get_tool(tool_code):
+        bot.reply_to(message, "Tool code không tồn tại.")
+        return
+    new_exp = extend_license(int(user_id_s), tool_code, int(days_s), machine_id)
+    bot.reply_to(message, f"Đã gia hạn tới <b>{fmt_dt(new_exp.isoformat())}</b>.")
+
+@bot.message_handler(commands=["coupon"])
+def cmd_coupon(message):
+    if not admin_only(message):
+        return
+    raw = message.text.replace("/coupon", "", 1).strip()
+    parts = [x.strip() for x in raw.split("|")]
+    if len(parts) != 5:
+        bot.reply_to(message, "Ví dụ:\n/coupon SALE10 | percent | 10 | 100 | 2026-12-31")
+        return
+    code, dtype, value_s, max_uses_s, exp_date = parts
+    dtype = dtype.lower()
+    if dtype not in {"percent", "fixed"}:
+        bot.reply_to(message, "discount_type chỉ nhận percent hoặc fixed.")
+        return
+    if not value_s.isdigit() or not max_uses_s.isdigit():
+        bot.reply_to(message, "value và max_uses phải là số.")
+        return
+    expires_at = None
+    if exp_date != "-":
+        try:
+            expires_at = datetime.strptime(exp_date, "%Y-%m-%d").replace(tzinfo=TZ, hour=23, minute=59, second=59).isoformat()
+        except ValueError:
+            bot.reply_to(message, "Ngày hết hạn phải dạng YYYY-MM-DD hoặc dùng -")
+            return
+    try:
+        add_coupon(code, dtype, int(value_s), int(max_uses_s), expires_at)
+        bot.reply_to(message, f"Đã tạo coupon <b>{safe_upper(code)}</b>.")
+    except ValueError:
+        bot.reply_to(message, "Coupon đã tồn tại.")
+
+@bot.message_handler(commands=["approve"])
+def cmd_approve(message):
+    if not admin_only(message):
+        return
+    parts = message.text.split()
+    if len(parts) != 2:
+        bot.reply_to(message, "Ví dụ: /approve ODAB12CD")
+        return
+    ok, msg = approve_paid_order(parts[1], source="admin")
+    bot.reply_to(message, msg)
+
+@bot.message_handler(commands=["broadcast"])
+def cmd_broadcast(message):
+    if not admin_only(message):
+        return
+    content = message.text.replace("/broadcast", "", 1).strip()
+    if not content:
+        bot.reply_to(message, "Ví dụ:\n/broadcast Shop đang có ưu đãi")
+        return
+    sent = 0
+    failed = 0
+    for uid, u in get_users().items():
+        if int(u.get("is_blocked", 0)) == 1:
+            continue
+        try:
+            bot.send_message(int(uid), content)
+            sent += 1
+        except Exception:
+            failed += 1
+    bot.reply_to(message, f"Broadcast xong.\nThành công: {sent}\nThất bại: {failed}")
+
+def handle_admin_broadcast(message):
+    if not admin_only(message):
+        return
+    sent = 0
+    failed = 0
+    for uid, u in get_users().items():
+        if int(u.get("is_blocked", 0)) == 1:
+            continue
+        try:
+            bot.send_message(int(uid), message.text)
+            sent += 1
+        except Exception:
+            failed += 1
+    bot.send_message(message.chat.id, f"Broadcast xong.\nThành công: {sent}\nThất bại: {failed}")
+
+@bot.message_handler(commands=["run_reminders"])
+def cmd_run_reminders(message):
+    if not admin_only(message):
+        return
+    process_expiry_reminders()
+    bot.reply_to(message, "Đã chạy nhắc hạn xong.")
+
+@bot.message_handler(func=lambda m: True, content_types=["text"])
+def fallback(message):
+    ensure_user(message.from_user)
+    bot.send_message(message.chat.id, "Chọn menu bên dưới hoặc dùng /help để xem lệnh.", reply_markup=main_menu_markup(message.from_user.id))
 
 @app.route("/", methods=["GET"])
 def home():
