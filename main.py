@@ -6,7 +6,6 @@ import json
 import time
 import hashlib
 import secrets
-import threading
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 
@@ -52,6 +51,9 @@ REMINDER_DAYS = [7, 3, 1, 0]
 
 TELEGRAM_WEBHOOK_PATH = os.getenv("TELEGRAM_WEBHOOK_PATH", f"/webhook/{BOT_TOKEN}")
 TELEGRAM_WEBHOOK_URL = f"{PUBLIC_BASE_URL}{TELEGRAM_WEBHOOK_PATH}" if PUBLIC_BASE_URL else ""
+REMINDER_WEBHOOK_PATH = os.getenv("REMINDER_WEBHOOK_PATH", "/cron/remind_expiring")
+REMINDER_WEBHOOK_SECRET = os.getenv("REMINDER_WEBHOOK_SECRET", "").strip()
+REMINDER_MIN_INTERVAL_SECONDS = int(os.getenv("REMINDER_MIN_INTERVAL_SECONDS", "600"))
 
 DEFAULT_TOOLS = {
     "GROKTOOL": {"code": "GROKTOOL", "name": "Tool tạo video AI", "price": 50000, "description": "GROKTOOL", "active": 1},
@@ -70,6 +72,7 @@ if not GITHUB_TOKEN:
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 app = Flask(__name__)
 BUY_STATE = {}
+LAST_REMINDER_RUN_TS = 0
 
 def now_vn():
     return datetime.now(TZ)
@@ -561,13 +564,19 @@ def process_expiry_reminders():
     if admin_lines:
         notify_admins("📋 <b>Danh sách user sắp hết hạn</b>\n" + "\n".join(admin_lines))
 
-def reminder_loop():
-    while True:
-        try:
-            process_expiry_reminders()
-        except Exception as e:
-            notify_admins(f"⚠️ Reminder loop lỗi: <code>{e}</code>")
-        time.sleep(REMINDER_CHECK_INTERVAL_SECONDS)
+def maybe_run_reminders(force=False):
+    global LAST_REMINDER_RUN_TS
+    now_ts = time.time()
+    if not force and (now_ts - LAST_REMINDER_RUN_TS) < REMINDER_MIN_INTERVAL_SECONDS:
+        return False
+    LAST_REMINDER_RUN_TS = now_ts
+    try:
+        process_expiry_reminders()
+        return True
+    except Exception as e:
+        print(f"maybe_run_reminders error: {e}")
+        return False
+
 
 def main_menu_markup(user_id):
     mk = types.InlineKeyboardMarkup(row_width=2)
@@ -867,6 +876,25 @@ def cmd_adduser(message):
         return
     new_exp = extend_license(int(user_id_s), tool_code, int(days_s), machine_id)
     bot.reply_to(message, f"Đã cấp user <code>{user_id_s}</code> tới <b>{fmt_dt(new_exp.isoformat())}</b>.")
+    try:
+        bot.send_message(
+            int(user_id_s),
+            f"✅ <b>Tool đã được kích hoạt/gia hạn</b>\n"
+            f"Tool: <b>{safe_upper(tool_code)}</b>\n"
+            f"Machine ID: <code>{norm_machine_id(machine_id) if machine_id else '-'}</code>\n"
+            f"Hạn mới: <b>{fmt_dt(new_exp.isoformat())}</b>",
+            reply_markup=main_menu_markup(int(user_id_s)),
+        )
+    except Exception:
+        pass
+    notify_admins(
+        f"🛠 <b>Admin đã cấp tool</b>\n"
+        f"User: <code>{user_id_s}</code>\n"
+        f"Tool: <b>{safe_upper(tool_code)}</b>\n"
+        f"Machine ID: <code>{norm_machine_id(machine_id) if machine_id else '-'}</code>\n"
+        f"Số ngày: <b>{int(days_s)}</b>\n"
+        f"Hạn mới: <b>{fmt_dt(new_exp.isoformat())}</b>"
+    )
 
 @bot.message_handler(commands=["extend"])
 def cmd_extend(message):
@@ -890,6 +918,25 @@ def cmd_extend(message):
         return
     new_exp = extend_license(int(user_id_s), tool_code, int(days_s), machine_id)
     bot.reply_to(message, f"Đã gia hạn tới <b>{fmt_dt(new_exp.isoformat())}</b>.")
+    try:
+        bot.send_message(
+            int(user_id_s),
+            f"✅ <b>Tool đã được gia hạn thành công</b>\n"
+            f"Tool: <b>{safe_upper(tool_code)}</b>\n"
+            f"Machine ID: <code>{norm_machine_id(machine_id) if machine_id else '-'}</code>\n"
+            f"Hạn mới: <b>{fmt_dt(new_exp.isoformat())}</b>",
+            reply_markup=main_menu_markup(int(user_id_s)),
+        )
+    except Exception:
+        pass
+    notify_admins(
+        f"🔁 <b>Admin đã gia hạn tool</b>\n"
+        f"User: <code>{user_id_s}</code>\n"
+        f"Tool: <b>{safe_upper(tool_code)}</b>\n"
+        f"Machine ID: <code>{norm_machine_id(machine_id) if machine_id else '-'}</code>\n"
+        f"Số ngày: <b>{int(days_s)}</b>\n"
+        f"Hạn mới: <b>{fmt_dt(new_exp.isoformat())}</b>"
+    )
 
 @bot.message_handler(commands=["coupon"])
 def cmd_coupon(message):
@@ -981,6 +1028,7 @@ def fallback(message):
 
 @app.route("/", methods=["GET"])
 def home():
+    maybe_run_reminders()
     return jsonify({
         "status": "running",
         "storage": "github_gist",
@@ -988,6 +1036,7 @@ def home():
         "gist_owner": GIST_OWNER,
         "telegram_webhook_path": TELEGRAM_WEBHOOK_PATH,
         "telegram_webhook_url": TELEGRAM_WEBHOOK_URL,
+        "reminder_webhook_path": REMINDER_WEBHOOK_PATH,
         "payos_webhook_path": PAYOS_WEBHOOK_PATH,
         "time": iso_now(),
     })
@@ -1004,6 +1053,7 @@ def telegram_webhook():
 
 @app.route(PAYOS_WEBHOOK_PATH, methods=["POST"])
 def payos_webhook():
+    maybe_run_reminders()
     payload = request.get_json(silent=True) or {}
     if not verify_payos_webhook_signature(payload):
         return jsonify({"error": 1, "message": "invalid signature"}), 400
@@ -1026,6 +1076,14 @@ def payos_webhook():
     order["updated_at"] = iso_now()
     save_order(order)
     return jsonify({"error": 0, "message": f"status updated {status or 'PENDING'}"})
+
+@app.route(REMINDER_WEBHOOK_PATH, methods=["GET", "POST"])
+def reminder_webhook():
+    secret = request.args.get("secret", "") or request.headers.get("X-Reminder-Secret", "")
+    if REMINDER_WEBHOOK_SECRET and secret != REMINDER_WEBHOOK_SECRET:
+        return jsonify({"ok": False, "message": "unauthorized"}), 401
+    ok = maybe_run_reminders(force=True)
+    return jsonify({"ok": ok, "message": "reminders processed" if ok else "reminders skipped"})
 
 @app.route("/payment-return", methods=["GET"])
 def payment_return():
@@ -1062,5 +1120,4 @@ if __name__ == "__main__":
         set_telegram_webhook()
     except Exception as e:
         print(e)
-    threading.Thread(target=reminder_loop, daemon=True).start()
     run_flask()
