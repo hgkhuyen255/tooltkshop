@@ -50,6 +50,9 @@ PAYMENT_NOTE_PREFIX = os.getenv("PAYMENT_NOTE_PREFIX", "TOOL")
 REMINDER_CHECK_INTERVAL_SECONDS = int(os.getenv("REMINDER_CHECK_INTERVAL_SECONDS", "3600"))
 REMINDER_DAYS = [7, 3, 1, 0]
 
+TELEGRAM_WEBHOOK_PATH = os.getenv("TELEGRAM_WEBHOOK_PATH", f"/webhook/{BOT_TOKEN}")
+TELEGRAM_WEBHOOK_URL = f"{PUBLIC_BASE_URL}{TELEGRAM_WEBHOOK_PATH}" if PUBLIC_BASE_URL else ""
+
 DEFAULT_TOOLS = {
     "GROKTOOL": {"code": "GROKTOOL", "name": "Tool tạo video AI", "price": 50000, "description": "GROKTOOL", "active": 1},
     "FBREELTOOL": {"code": "FBREELTOOL", "name": "Tool đăng video", "price": 50000, "description": "FBREELTOOL", "active": 1},
@@ -978,7 +981,26 @@ def fallback(message):
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "running", "storage": "github_gist", "gist_id": GIST_ID, "gist_owner": GIST_OWNER, "payos_webhook_path": PAYOS_WEBHOOK_PATH, "time": iso_now()})
+    return jsonify({
+        "status": "running",
+        "storage": "github_gist",
+        "gist_id": GIST_ID,
+        "gist_owner": GIST_OWNER,
+        "telegram_webhook_path": TELEGRAM_WEBHOOK_PATH,
+        "telegram_webhook_url": TELEGRAM_WEBHOOK_URL,
+        "payos_webhook_path": PAYOS_WEBHOOK_PATH,
+        "time": iso_now(),
+    })
+
+@app.route(TELEGRAM_WEBHOOK_PATH, methods=["POST"])
+def telegram_webhook():
+    if request.headers.get("content-type", "").lower().startswith("application/json"):
+        payload = request.get_data(as_text=True)
+        if payload:
+            update = telebot.types.Update.de_json(payload)
+            bot.process_new_updates([update])
+            return jsonify({"ok": True})
+    return jsonify({"ok": False, "message": "invalid update"}), 400
 
 @app.route(PAYOS_WEBHOOK_PATH, methods=["POST"])
 def payos_webhook():
@@ -1017,13 +1039,28 @@ def payment_return():
 def payment_cancel():
     return "Thanh toán đã bị hủy."
 
+def set_telegram_webhook():
+    if not TELEGRAM_WEBHOOK_URL:
+        raise RuntimeError("Thiếu PUBLIC_BASE_URL nên không thể set Telegram webhook.")
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+        ok = bot.set_webhook(url=TELEGRAM_WEBHOOK_URL)
+        if not ok:
+            raise RuntimeError("Telegram từ chối set webhook.")
+        return True
+    except Exception as e:
+        raise RuntimeError(f"Set Telegram webhook lỗi: {e}")
+
 def run_flask():
     app.run(host=FLASK_HOST, port=FLASK_PORT, debug=False, use_reloader=False)
 
 if __name__ == "__main__":
     bootstrap_gist()
     confirm_payos_webhook_url()
-    notify_admins("🤖 Bot Gist storage đang khởi động.")
-    threading.Thread(target=run_flask, daemon=True).start()
+    try:
+        set_telegram_webhook()
+    except Exception as e:
+        print(e)
     threading.Thread(target=reminder_loop, daemon=True).start()
-    bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
+    run_flask()
